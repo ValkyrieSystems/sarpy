@@ -749,7 +749,7 @@ class CombinedRationalPolynomial(object):
             self,
             *args: List[numpy.ndarray],
             combine: bool = True) -> Union[Tuple[numpy.ndarray, ...], numpy.ndarray]:
-        out = tuple([entry(*args) for entry in self._collection])
+        out = tuple(entry(*args) for entry in self._collection)
         if combine:
             return numpy.stack(out, axis=-1)
         else:

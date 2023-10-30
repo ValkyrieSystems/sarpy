@@ -75,6 +75,7 @@ def _create_cphd_styles(kmz_document):
         high_width="1.5",
     )
 
+
     def _add_toa_style(name, aabbggrr):
         kmz_document.add_style(
             name + "_high",

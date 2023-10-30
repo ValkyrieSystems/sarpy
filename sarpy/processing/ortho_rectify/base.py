@@ -345,8 +345,8 @@ class OrthorectificationIterator(object):
     """
 
     __slots__ = (
-        '_calculator', '_ortho_helper', '_pixel_bounds', '_ortho_bounds',
-        '_this_index', '_iteration_blocks', '_remap_function')
+        '_calculator', '_ortho_helper', '_bounds', '_pixel_bounds', '_ortho_bounds',
+        '_this_index', '_iteration_blocks', '_remap_function', '_recalc_remap_globals')
 
     def __init__(
             self,
@@ -375,6 +375,8 @@ class OrthorectificationIterator(object):
             any required global parameters? This will automatically happen if
             they are not already set.
         """
+        self._bounds = bounds
+        self._recalc_remap_globals = recalc_remap_globals
 
         self._this_index = None
         self._iteration_blocks = None
@@ -634,7 +636,7 @@ class OrthorectificationIterator(object):
             this_row_range = self._iteration_blocks[self._this_index]
             this_ortho_bounds, this_pixel_bounds = self._ortho_helper.extract_pixel_bounds(
                 (this_row_range[0], this_row_range[1], self.ortho_bounds[2], self.ortho_bounds[3]))
-        
+
         this_pixel_bounds[0::2] -= pad
         this_pixel_bounds[1::2] += pad
         return this_ortho_bounds, this_pixel_bounds

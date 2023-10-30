@@ -723,7 +723,7 @@ class GDM(MonochromaticRemap):
     The Density remap using image specific parameters
     """
 
-    __slots__ = ('_override_name', '_bit_depth', '_dimension', '_weighting', '_graze_rad', '_slope_rad',
+    __slots__ = ('_override_name', '_bit_depth', '_dimension', '_weighting', '_graze_deg', '_slope_deg',
                  '_data_mean', '_data_median')
     _name = 'gdm'
 
@@ -771,8 +771,8 @@ class GDM(MonochromaticRemap):
         self._data_mean = data_mean
         self._data_median = data_median
         self._weighting = weighting.lower()
-        self._graze_rad = numpy.radians(graze_deg)
-        self._slope_rad = numpy.radians(slope_deg)
+        self._graze_deg = graze_deg
+        self._slope_deg = slope_deg
 
     @property
     def data_mean(self) -> Optional[float]:
@@ -809,7 +809,7 @@ class GDM(MonochromaticRemap):
         w2 = -0.0422
         w5 = -1.95
         a1 = data_median
-        a2 = numpy.sin(self._graze_rad) / numpy.cos(self._slope_rad)
+        a2 = numpy.sin(numpy.radians(self._graze_deg)) / numpy.cos(numpy.radians(self._slope_deg))
         a5 = numpy.log10(data_median / data_mean)
         cl_init = a1 * w1
         ch_init = a1 * 10**(c3 + w2*a2 + w5*a5)
@@ -1325,7 +1325,8 @@ class PEDF(MonochromaticRemap):
     A monochromatic piecewise extended density format remap.
     """
 
-    __slots__ = ('_override_name', '_bit_depth', '_dimension', '_density')
+    __slots__ = ('_override_name', '_bit_depth', '_dimension', '_max_output_value',
+                 '_dmin', '_mmult', '_eps', '_data_mean', '_density')
     _name = 'pedf'
 
     def __init__(
@@ -1358,6 +1359,10 @@ class PEDF(MonochromaticRemap):
             The global data mean (for continuity). The appropriate value will be
             calculated on a per calling array basis if not provided.
         """
+        self._dmin = dmin
+        self._mmult = mmult
+        self._eps = eps
+        self._data_mean = data_mean
 
         MonochromaticRemap.__init__(
             self, override_name=override_name, bit_depth=bit_depth, max_output_value=max_output_value)
@@ -1665,7 +1670,7 @@ class LUT8bit(RemapFunction):
     to produce a (color) image output
     """
 
-    __slots__ = ('_override_name', '_bit_depth', '_dimension', '_mono_remap', '_lookup_table')
+    __slots__ = ('_override_name', '_bit_depth', '_dimension', '_mono_remap', '_lookup_table', '_use_alpha')
     _name = '_lut_8bit'
     _allowed_dimension = None
 
@@ -1696,6 +1701,7 @@ class LUT8bit(RemapFunction):
 
         self._mono_remap = None
         self._lookup_table = None
+        self._use_alpha = use_alpha
         if override_name is None and isinstance(lookup_table, str):
             override_name = lookup_table
         RemapFunction.__init__(

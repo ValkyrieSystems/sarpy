@@ -10,7 +10,7 @@ import logging
 from typing import Union
 
 import numpy
-from scipy.interpolate import RectBivariateSpline
+from scipy.ndimage import map_coordinates
 
 from sarpy.io.complex.sicd_elements.SICD import SICDType
 from sarpy.io.complex.base import SICDTypeReader
@@ -565,6 +565,7 @@ class OrthorectificationHelper(object):
                 numpy.isfinite(pixel_cols) &
                 (pixel_rows >= row_array[0]) & (pixel_rows < row_array[-1]) &
                 (pixel_cols >= col_array[0]) & (pixel_cols < col_array[-1]))
+
         return mask
 
     def bounds_to_rectangle(self, bounds):
@@ -1023,6 +1024,7 @@ class NearestNeighborMethod(OrthorectificationHelper):
             row_inds = numpy.digitize(pixel_rows[mask], row_array)
             col_inds = numpy.digitize(pixel_cols[mask], col_array)
             ortho_array[mask] = value_array[row_inds, col_inds]
+
         return ortho_array
 
 
@@ -1032,7 +1034,7 @@ class BivariateSplineMethod(OrthorectificationHelper):
 
     .. warning::
         Modification of the proj_helper parameters when the default full image
-        bounds have been defained (i.e. sicd.RadarCollection.Area is defined) may
+        bounds have been defined (i.e. sicd.RadarCollection.Area is defined) may
         result in unintended results.
     """
 
@@ -1119,11 +1121,14 @@ class BivariateSplineMethod(OrthorectificationHelper):
         value_array = self._apply_radiometric_params(row_array, col_array, value_array)
 
         if value_array.size > 0:
-            # set up our spline
-            sp = RectBivariateSpline(row_array, col_array, value_array, kx=self.row_order, ky=self.col_order, s=0)
-            # determine the in bounds points
-            mask = self._get_mask(pixel_rows, pixel_cols, row_array, col_array)
-            result = sp.ev(pixel_rows[mask], pixel_cols[mask])
-            # potentially apply the radiometric parameters
-            ortho_array[mask] = result
+            out_to_in_map = numpy.stack([pixel_rows - row_array[0], pixel_cols - col_array[0]], axis=0)
+
+            map_coordinates(input=value_array,
+                            coordinates=out_to_in_map,
+                            output=ortho_array,
+                            order=min(max(0, self.row_order, self.col_order), 5),
+                            mode='constant',
+                            cval=(0 if self._pad_value is None else self._pad_value),
+                            prefilter=True)
+
         return ortho_array

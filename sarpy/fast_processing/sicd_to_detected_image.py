@@ -33,7 +33,7 @@ def howlong(label):
         print(f'{label}: {time.perf_counter() - start}')
 
 
-def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds):
+def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3):
     """Produce a SIDD from a SICD
 
     Args
@@ -42,6 +42,8 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds):
         SICD pixel array.  2D array of complex values.
     sicd_metadata: `sarpy.io.complex.sicd_elements.SICD.SICDType`
         SICD Metadata object
+    sidd_version: int
+        Version of SIDD metadata to produce
 
     Returns
     -------
@@ -69,12 +71,12 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds):
         gdm_params = remap.gdm_parameters(sicd_metadata)
         data = remap.gdm(data, **gdm_params)
 
-    sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds)
+    sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds, sidd_version)
 
     return data, sidd_metadata
 
 
-def _create_sidd_metadata(proj, bounds):
+def _create_sidd_metadata(proj, bounds, sidd_version):
     """Generate the SIDD metadata for the supplied projection helper
 
     Args
@@ -83,6 +85,8 @@ def _create_sidd_metadata(proj, bounds):
         Projection helper
     bounds: array-like
         Output area bounds.  [min row, max row, min column, max column]
+    sidd_version: int
+        Version of SIDD metadata to produce
 
     Returns
     -------
@@ -113,10 +117,12 @@ def _create_sidd_metadata(proj, bounds):
             return sarpy.processing.ortho_rectify.ortho_methods.OrthorectificationHelper.validate_bounds(bounds)
 
     ortho_helper = DummyOrthoHelper(proj)
-    sidd_metadata = sarpy.processing.sidd.sidd_structure_creation.create_sidd_structure_v3(ortho_helper,
-                                                                                           bounds,
-                                                                                           'Detectected Image',
-                                                                                           'MONO8I')
+    sidd_metadata = sarpy.processing.sidd.sidd_structure_creation.create_sidd_structure(
+        ortho_helper,
+        bounds,
+        'Detectected Image',
+        'MONO8I',
+        version=sidd_version)
     return sidd_metadata
 
 
@@ -148,6 +154,8 @@ def main(args=None):
     parser.add_argument('output_sidd', type=pathlib.Path, help="Path to write SIDD NITF")
     parser.add_argument('--sidelobe-control', choices=['Skip', 'Uniform', 'Taylor'], default='Skip',
                         help="Desired sidelobe control.  'Skip' retains weighting of input SICD.")
+    parser.add_argument('--sidd-version', default=3, type=int, choices=[1, 2, 3],
+                        help="The version of the SIDD standard used.")
     config = parser.parse_args(args)
 
     with howlong('read'):
@@ -167,7 +175,8 @@ def main(args=None):
                                                                        new_window, window_name, new_params)
 
     new_pixels, new_meta = sicd_to_sidd(sicd_pixels, sicd_metadata,
-                                        proj_helper=proj_helper, ortho_bounds=ortho_bounds)
+                                        proj_helper=proj_helper, ortho_bounds=ortho_bounds,
+                                        sidd_version=config.sidd_version)
 
     with howlong('write'):
         with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), new_meta) as writer:

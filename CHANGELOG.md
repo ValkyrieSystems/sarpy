@@ -14,11 +14,11 @@ release points are not being annotated in GitHub.
 - CPHD 1.0.1 xml examples to `sarpy/tests/data`
 - `sarpy/processing/sicd/spectral_taper.py` and `sarpy/utils/sicd_sidelobe_control.py`
 - `--remap` argument to `sarpy/utils/create_product.py`
-- `sarpy/utils/sicd_to_sidd.py`
 - `GDM` to `sarpy/visualization/remap.py`
 - Unit tests for `sarpy/consistency/sicd_consistency.py`
 - Support reading CPHDs with an AmpSF PVP whose Data/SignalArrayFormat is CF8
 - Unit tests for `sarpy/consistency/sidd_consistency.py`
+- Support for MATESA TRE
 ### Fixed
 - `sarpy.io.kml.add_polygon` coordinate conditioning for older numpy versions
 - Replace unsupported `pillow` constant `Image.ANTIALIAS` with `Image.LANCZOS`
@@ -34,6 +34,8 @@ release points are not being annotated in GitHub.
 - Properly close file objects in NITF and CPHD writers
 - SIDD file reading in `sarpy/consistency/sidd_consistency.py`
 - Application of adjustable parameter offsets in RIC frames during projection
+- Overflow bug in `ComplexFormatFunction` magnitude/phase -> real/imag
+- NITF image subheader parsing when there are more than 9 bands
 
 ## [1.3.58] - 2023-08-07
 ### Added

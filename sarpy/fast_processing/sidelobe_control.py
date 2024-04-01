@@ -5,6 +5,7 @@ import numpy as np
 import scipy.fft
 import scipy.interpolate as spi
 
+from sarpy.fast_processing import read_sicd
 from sarpy.io.complex.sicd_elements.Grid import WgtTypeType
 from sarpy.processing.sicd.normalize_sicd import apply_skew_poly
 from sarpy.processing.sicd.spectral_taper import Taper
@@ -233,9 +234,7 @@ def main(args=None):
                         help="Desired sidelobe control")
     config = parser.parse_args(args)
 
-    with sarpy.io.complex.open(str(config.input_sicd)) as reader:
-        sicd_pixels = reader[...]
-        sicd_meta = reader.sicd_meta
+    sicd_pixels, sicd_meta = read_sicd.read_from_file(config.input_sicd)
 
     window_name = config.sidelobe_control.upper()
     taper = Taper(window_name)

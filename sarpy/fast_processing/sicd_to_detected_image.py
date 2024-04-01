@@ -13,6 +13,7 @@ import sarpy.processing.ortho_rectify
 
 from sarpy.fast_processing import projection
 from sarpy.fast_processing import sidelobe_control
+from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import remap
 
 
@@ -159,9 +160,8 @@ def main(args=None):
     config = parser.parse_args(args)
 
     with howlong('read'):
+        sicd_pixels, sicd_metadata = read_sicd.read_from_file(config.input_sicd)
         with sarpy.io.complex.open(str(config.input_sicd)) as reader:
-            sicd_pixels = reader[...]
-            sicd_metadata = reader.sicd_meta
             # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
             proj_helper, ortho_bounds = _projection_info(reader)
 

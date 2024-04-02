@@ -7,9 +7,10 @@ import numba
 import numpy as np
 
 # TODO Refactor from sarpy2
-import sarpy.processing.sidd.sidd_structure_creation
-import sarpy.processing.sicd.spectral_taper
+import sarpy.geometry.point_projection
 import sarpy.processing.ortho_rectify
+import sarpy.processing.sicd.spectral_taper
+import sarpy.processing.sidd.sidd_structure_creation
 
 from sarpy.fast_processing import projection
 from sarpy.fast_processing import sidelobe_control
@@ -179,7 +180,7 @@ def main(args=None):
                                         sidd_version=config.sidd_version)
 
     with howlong('write'):
-        with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), new_meta) as writer:
+        with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), new_meta, check_existence=False) as writer:
             writer.write_chip(new_pixels)
 
 
@@ -188,8 +189,55 @@ def _projection_info(reader):
     # TODO refactor this function to run from SICD XML
     from sarpy.processing.ortho_rectify import NearestNeighborMethod
     from sarpy.processing.ortho_rectify.base import OrthorectificationIterator
+    from sarpy.processing.ortho_rectify import projection_helper
 
-    ortho_helper = NearestNeighborMethod(reader)
+    # Based on sarpy.processing.ortho_rectify.ortho_methods.OrthorectificationHelper.set_index_and_proj_helper
+    try:
+        plane = reader.sicd_meta.RadarCollection.Area.Plane
+        row_sample_spacing = plane.XDir.LineSpacing
+        col_sample_spacing = plane.YDir.SampleSpacing
+        default_ortho_bounds = np.array([plane.XDir.FirstLine, plane.XDir.FirstLine + plane.XDir.NumLines,
+                                         plane.YDir.FirstSample, plane.YDir.FirstSample + plane.YDir.NumSamples],
+                                        dtype=np.uint32)
+    except AttributeError:
+        delta_xrow = 1.0 / reader.sicd_meta.Grid.Row.ImpRespBW
+        delta_ycol = 1.0 / reader.sicd_meta.Grid.Col.ImpRespBW
+        m_spxy_il = sarpy.geometry.point_projection.image_to_slant_sensitivity(reader.sicd_meta, delta_xrow, delta_ycol)
+
+        graz = np.radians(reader.sicd_meta.SCPCOA.GrazeAng)
+        twst = np.radians(reader.sicd_meta.SCPCOA.TwistAng)
+        m_gpxy_spxy = np.array([
+            [1.0 / np.cos(graz), 0],
+            [np.tan(graz) * np.tan(twst), (1.0 / np.cos(twst))]
+        ])
+
+        gpxy_resolutions = np.abs(m_gpxy_spxy @ m_spxy_il @ np.array([delta_xrow, delta_ycol]))
+
+        sample_spacing = min(gpxy_resolutions) / 1.5
+        row_sample_spacing = sample_spacing
+        col_sample_spacing = sample_spacing
+        default_ortho_bounds = None
+
+    ph_kwargs = {
+        'sicd': reader.sicd_meta,
+        'row_spacing': row_sample_spacing,
+        'col_spacing': col_sample_spacing,
+    }
+    try:
+        proj_helper = projection_helper.PGRatPolyProjection(**ph_kwargs)
+    except projection_helper.SarpyRatPolyError:
+        proj_helper = projection_helper.PGProjection(**ph_kwargs)
+
+    ortho_helper = NearestNeighborMethod(
+        reader,
+        proj_helper=proj_helper,
+    )
+
+    # Finish up sarpy.processing.ortho_rectify.ortho_metods.OrthorectificationHelper.set_index_and_proj_helper
+    if default_ortho_bounds is not None:
+        _, ortho_rectangle = ortho_helper.bounds_to_rectangle(default_ortho_bounds)
+        ortho_helper._default_physical_bounds = ortho_helper.proj_helper.ortho_to_ecf(ortho_rectangle)
+
     ortho_iterator = OrthorectificationIterator(ortho_helper)
     return ortho_helper.proj_helper, ortho_iterator.ortho_bounds
 

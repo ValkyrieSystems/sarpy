@@ -1,3 +1,5 @@
+__classification__ = "UNCLASSIFIED"
+
 import copy
 import pathlib
 import tempfile

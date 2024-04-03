@@ -1,7 +1,9 @@
 """Utility for processing a SICD to a ground plane detected image SIDD"""
-import contextlib
+
+__classification__ = "UNCLASSIFIED"
+
+import logging
 import pathlib
-import time
 
 import numba
 import numpy as np
@@ -12,27 +14,11 @@ import sarpy.processing.ortho_rectify
 import sarpy.processing.sicd.spectral_taper
 import sarpy.processing.sidd.sidd_structure_creation
 
+from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import projection
 from sarpy.fast_processing import sidelobe_control
 from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import remap
-
-
-@contextlib.contextmanager
-def howlong(label):
-    """Print how long a section of code took
-
-    Args
-    ----
-    label: str
-        String printed alongside duration
-
-    """
-    start = time.perf_counter()
-    try:
-        yield start
-    finally:
-        print(f'{label}: {time.perf_counter() - start}')
 
 
 def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3):
@@ -56,11 +42,11 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
     """
 
     # amplitude
-    with howlong('amplitude'):
+    with benchmark.howlong('amplitude'):
         data = _amplitude(data)
 
     # project
-    with howlong('projection'):
+    with benchmark.howlong('projection'):
         # TODO replace projection_helper with output plane and grid computation
         # TODO compute output plane/grid, store in SICD metadata
         # TODO adjust output plane based on chipped extent
@@ -68,7 +54,7 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
         # TODO create callables for SICD <--> SIDD coordinates
         data = projection.project(data, sicd_metadata, proj_helper, ortho_bounds)
 
-    with howlong('remap'):
+    with benchmark.howlong('remap'):
         _clip_zero_inplace(data)  # projection interpolation could result in small negative values
         gdm_params = remap.gdm_parameters(sicd_metadata)
         data = remap.gdm(data, **gdm_params)
@@ -158,30 +144,41 @@ def main(args=None):
                         help="Desired sidelobe control.  'Skip' retains weighting of input SICD.")
     parser.add_argument('--sidd-version', default=3, type=int, choices=[1, 2, 3],
                         help="The version of the SIDD standard used.")
+    parser.add_argument('--fft-backend', choices=['auto', 'mkl', 'scipy'], default='auto',
+                        help="Which FFT backend to use.  Default 'auto', which will use mkl if available")
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help="Enable verbose logging (may be repeated)")
     config = parser.parse_args(args)
 
-    with howlong('read'):
-        sicd_pixels, sicd_metadata = read_sicd.read_from_file(config.input_sicd)
-        with sarpy.io.complex.open(str(config.input_sicd)) as reader:
-            # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
-            proj_helper, ortho_bounds = _projection_info(reader)
+    loglevels = [logging.WARNING, logging.INFO, logging.DEBUG]
+    loglevel = loglevels[min(config.verbose, len(loglevels)-1)]
+    logging.basicConfig(level=loglevel)
+    logging.info(f"Log level set to {logging.getLevelName(loglevel)}")
 
-    if config.sidelobe_control != 'Skip':
-        with howlong('sidelobe'):
-            window_name = config.sidelobe_control.upper()
-            taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
-            new_window = taper.get_vals(65, sym=True)
-            new_params = taper.window_pars
-            sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels, sicd_metadata,
-                                                                       new_window, window_name, new_params)
+    with sarpy.fast_processing.backend.set_fft_backend(config.fft_backend):
+        with benchmark.howlong("SICDtoSIDD"):
+            with benchmark.howlong('read'):
+                sicd_pixels, sicd_metadata = read_sicd.read_from_file(config.input_sicd)
+                with sarpy.io.complex.open(str(config.input_sicd)) as reader:
+                    # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
+                    proj_helper, ortho_bounds = _projection_info(reader)
 
-    new_pixels, new_meta = sicd_to_sidd(sicd_pixels, sicd_metadata,
-                                        proj_helper=proj_helper, ortho_bounds=ortho_bounds,
-                                        sidd_version=config.sidd_version)
+            if config.sidelobe_control != 'Skip':
+                with benchmark.howlong('sidelobe'):
+                    window_name = config.sidelobe_control.upper()
+                    taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
+                    new_window = taper.get_vals(65, sym=True)
+                    new_params = taper.window_pars
+                    sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels, sicd_metadata,
+                                                                               new_window, window_name, new_params)
 
-    with howlong('write'):
-        with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), new_meta, check_existence=False) as writer:
-            writer.write_chip(new_pixels)
+            new_pixels, new_meta = sicd_to_sidd(sicd_pixels, sicd_metadata,
+                                                proj_helper=proj_helper, ortho_bounds=ortho_bounds,
+                                                sidd_version=config.sidd_version)
+
+            with benchmark.howlong('write'):
+                with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), new_meta, check_existence=False) as writer:
+                    writer.write_chip(new_pixels)
 
 
 def _projection_info(reader):

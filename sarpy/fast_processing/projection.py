@@ -1,4 +1,7 @@
 """Project detected data corresponding to a SICD grid to the ground"""
+
+__classification__ = "UNCLASSIFIED"
+
 import numba
 import numpy as np
 

@@ -1,15 +1,22 @@
 """Utililty for changing the sidelobe weighting of a SICD"""
+
+__classification__ = "UNCLASSIFIED"
+
 import copy
+import logging
 
 import numpy as np
+import numpy.polynomial.polynomial as npp
 import scipy.fft
 import scipy.interpolate as spi
 
 from sarpy.fast_processing import read_sicd
 from sarpy.io.complex.sicd_elements.Grid import WgtTypeType
-from sarpy.processing.sicd.normalize_sicd import apply_skew_poly
 from sarpy.processing.sicd.spectral_taper import Taper
 import sarpy.processing.sicd.windows as windows  # TODO migrate to sarpy2
+
+import sarpy.fast_processing.backend
+from sarpy.fast_processing import benchmark
 
 
 def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameters=None):
@@ -44,16 +51,65 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
         both_windows = new_weights / np.maximum(existing_window, 0.01 * np.max(existing_window))
 
         # deskew
-        data = _deskew(data, sicd_metadata, direction, forward=True)
+        with benchmark.howlong("deskew"):
+            data = _deskew(data, sicd_metadata, direction, forward=False)
 
         # FFT # Mult # IFFT
-        data = _fft_window_ifft(data, sicd_metadata, direction, both_windows)
+        with benchmark.howlong("fft_window_ifft"):
+            data = _fft_window_ifft(data, sicd_metadata, direction, both_windows)
 
-        # reskew?  # TODO update metadata instead of reskewing
-        data = _deskew(data, sicd_metadata, direction, forward=False)
+        with benchmark.howlong("redeskew"):
+            # reskew?  # TODO update metadata instead of reskewing
+            data = _deskew(data, sicd_metadata, direction, forward=True)
 
     new_sicd_metadata = updated_sicd_metadata(sicd_metadata, new_weights, window_name, window_parameters)
     return data, new_sicd_metadata
+
+
+# based on sarpy.processing.sicd.normalize_sicd.apply_skew_poly
+def _apply_skew_poly(
+        input_data: np.ndarray,
+        delta_kcoa_poly: np.ndarray,
+        row_array: np.ndarray,
+        col_array: np.ndarray,
+        fft_sgn: int,
+        dimension: int,
+        forward: bool = False) -> np.ndarray:
+    """
+    Performs the skew operation on the complex array, according to the provided
+    delta kcoa polynomial.
+
+    Parameters
+    ----------
+    input_data : np.ndarray
+        The input data.
+    delta_kcoa_poly : np.ndarray
+        The delta kcoa polynomial to use.
+    row_array : np.ndarray
+        The row array, should agree with input_data first dimension definition.
+    col_array : np.ndarray
+        The column array, should agree with input_data second dimension definition.
+    fft_sgn : int
+        The fft sign to use.
+    dimension : int
+        The dimension to apply along.
+    forward : bool
+        If True, this shifts forward (i.e. skews), otherwise applies in inverse
+        (i.e. deskew) direction.
+
+    Returns
+    -------
+    np.ndarray
+    """
+
+    if np.all(delta_kcoa_poly == 0):
+        return input_data
+
+    delta_kcoa_poly_int = npp.polyint(delta_kcoa_poly, axis=dimension)
+    if forward:
+        fft_sgn *= -1
+    return input_data*np.exp(1j*fft_sgn*2*np.pi*npp.polygrid2d(
+        row_array, col_array, delta_kcoa_poly_int), dtype=input_data.dtype)
 
 
 # TODO rewrite/optimize.  This is mostly a copy/paste of sarpy.processing.sicd.spectral_taper._apply_1d_spectral_taper
@@ -69,8 +125,9 @@ def _deskew(cdata, mdata, axis, forward):
     delta_k_coa_poly = np.array([[0.0]]) if axis_mdata.DeltaKCOAPoly is None else axis_mdata.DeltaKCOAPoly.Coefs
 
     if not np.all(delta_k_coa_poly == 0):
-        cdata = apply_skew_poly(cdata, delta_k_coa_poly, row_array=xrow, col_array=ycol,
-                                fft_sgn=axis_mdata.Sgn, dimension=axis_index, forward=forward)
+        with benchmark.howlong('apply_skew'):
+            cdata = _apply_skew_poly(cdata, delta_k_coa_poly, row_array=xrow, col_array=ycol,
+                                     fft_sgn=axis_mdata.Sgn, dimension=axis_index, forward=forward)
     return cdata
 
 
@@ -87,28 +144,32 @@ def _fft_window_ifft(cdata, mdata, axis, window_vals):
     wrap_around_pad = int(min(200 * osf, 0.1 * axis_size))
     good_fft_size = scipy.fft.next_fast_len(axis_size + wrap_around_pad)
 
-    # Forward transform without FFTSHIFT so the DC bin is at index=0
-    if axis_mdata.Sgn == -1:
-        cdata_fft = scipy.fft.fft(cdata, n=good_fft_size, axis=axis_index, workers=-1)
-    else:
-        cdata_fft = scipy.fft.ifft(cdata, n=good_fft_size, axis=axis_index, workers=-1)
+    with benchmark.howlong("fft"):
+        # Forward transform without FFTSHIFT so the DC bin is at index=0
+        if axis_mdata.Sgn == -1:
+            cdata_fft = scipy.fft.fft(cdata, n=good_fft_size, axis=axis_index, workers=-1)
+        else:
+            cdata_fft = scipy.fft.ifft(cdata, n=good_fft_size, axis=axis_index, workers=-1)
 
-    # Interpolate the taper to cover the spectral support bandwidth and extend the
-    # taper window's end points into the over sample region of the spectrum.
-    func = spi.interp1d(np.linspace(-ipr_bw / 2, ipr_bw / 2, len(window_vals)), window_vals, kind='cubic',
-                        bounds_error=False, fill_value=(window_vals[0], window_vals[-1]))
-    padded_taper = func(scipy.fft.fftfreq(good_fft_size, axis_mdata.SS))
+    with benchmark.howlong("taper"):
+        # Interpolate the taper to cover the spectral support bandwidth and extend the
+        # taper window's end points into the over sample region of the spectrum.
+        func = spi.interp1d(np.linspace(-ipr_bw / 2, ipr_bw / 2, len(window_vals)), window_vals, kind='cubic',
+                            bounds_error=False, fill_value=(window_vals[0], window_vals[-1]))
+        padded_taper = func(scipy.fft.fftfreq(good_fft_size, axis_mdata.SS))
 
-    # Apply the taper to the spectrum.
-    taper_2d = padded_taper[:, np.newaxis] if axis == 'Row' else padded_taper[np.newaxis, :]
-    cdata_fft *= taper_2d
+        # Apply the taper to the spectrum.
+        taper_2d = padded_taper[:, np.newaxis] if axis == 'Row' else padded_taper[np.newaxis, :]
+    with benchmark.howlong("multiply"):
+        cdata_fft *= taper_2d
 
-    # Inverse transform without FFTSHIFT and trim back to the original image size.
-    nrows, ncols = cdata.shape
-    if axis_mdata.Sgn == -1:
-        cdata = scipy.fft.ifft(cdata_fft, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
-    else:
-        cdata = scipy.fft.fft(cdata_fft, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
+    with benchmark.howlong("ifft"):
+        # Inverse transform without FFTSHIFT and trim back to the original image size.
+        nrows, ncols = cdata.shape
+        if axis_mdata.Sgn == -1:
+            cdata = scipy.fft.ifft(cdata_fft, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
+        else:
+            cdata = scipy.fft.fft(cdata_fft, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
 
     return cdata
 
@@ -232,19 +293,30 @@ def main(args=None):
     parser.add_argument('--sidelobe-control', required=True,
                         choices=['Uniform', 'Taylor'], default='Uniform',
                         help="Desired sidelobe control")
+    parser.add_argument('--fft-backend', choices=['auto', 'mkl', 'scipy'], default='auto',
+                        help="Which FFT backend to use.  Default 'auto', which will use mkl if available")
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help="Enable verbose logging (may be repeated)")
     config = parser.parse_args(args)
 
-    sicd_pixels, sicd_meta = read_sicd.read_from_file(config.input_sicd)
+    loglevels = [logging.WARNING, logging.INFO, logging.DEBUG]
+    logging.basicConfig(level=loglevels[min(config.verbose, len(loglevels)-1)])
 
-    window_name = config.sidelobe_control.upper()
-    taper = Taper(window_name)
-    new_window = taper.get_vals(65, sym=True)
-    new_params = taper.window_pars
-    new_pixels, new_meta = sicd_to_sicd(sicd_pixels, sicd_meta,
-                                        new_window, window_name, new_params)
+    with sarpy.fast_processing.backend.set_fft_backend(config.fft_backend):
+        with benchmark.howlong('sidelobe_control'):
+            with benchmark.howlong('read'):
+                sicd_pixels, sicd_meta = read_sicd.read_from_file(config.input_sicd)
 
-    with sarpy.io.complex.sicd.SICDWriter(str(config.output_sicd), new_meta) as writer:
-        writer.write_chip(new_pixels)
+            window_name = config.sidelobe_control.upper()
+            taper = Taper(window_name)
+            new_window = taper.get_vals(65, sym=True)
+            new_params = taper.window_pars
+            new_pixels, new_meta = sicd_to_sicd(sicd_pixels, sicd_meta,
+                                                new_window, window_name, new_params)
+
+            with benchmark.howlong('write'):
+                with sarpy.io.complex.sicd.SICDWriter(str(config.output_sicd), new_meta) as writer:
+                    writer.write_chip(new_pixels)
 
 
 if __name__ == '__main__':

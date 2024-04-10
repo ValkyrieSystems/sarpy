@@ -5,6 +5,7 @@ __classification__ = "UNCLASSIFIED"
 import copy
 import logging
 
+import numba
 import numpy as np
 import numpy.polynomial.polynomial as npp
 import scipy.fft
@@ -66,68 +67,49 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
     return data, new_sicd_metadata
 
 
-# based on sarpy.processing.sicd.normalize_sicd.apply_skew_poly
-def _apply_skew_poly(
-        input_data: np.ndarray,
-        delta_kcoa_poly: np.ndarray,
-        row_array: np.ndarray,
-        col_array: np.ndarray,
-        fft_sgn: int,
-        dimension: int,
-        forward: bool = False) -> np.ndarray:
-    """
-    Performs the skew operation on the complex array, according to the provided
-    delta kcoa polynomial.
+@numba.njit(parallel=True)
+def _apply_phase_poly(
+        input_data,
+        phase_poly,
+        row_0,
+        row_ss,
+        col_0,
+        col_ss):
+    """numba parallelized phase poly application"""
+    out = np.empty_like(input_data)
+    for rowidx in numba.prange(out.shape[0]):
+        row_val = row_0 + rowidx * row_ss
+        col_poly = phase_poly[-1, :]
+        for ndx in range(phase_poly.shape[0] - 1, 0, -1):
+            col_poly = col_poly * row_val + phase_poly[ndx - 1, :]
+        for colidx in range(out.shape[1]):
+            col_val = col_0 + colidx * col_ss
+            phase_val = col_poly[-1]
+            for ndx in range(col_poly.shape[0] - 1, 0, -1):
+                phase_val = phase_val * col_val + col_poly[ndx - 1]
 
-    Parameters
-    ----------
-    input_data : np.ndarray
-        The input data.
-    delta_kcoa_poly : np.ndarray
-        The delta kcoa polynomial to use.
-    row_array : np.ndarray
-        The row array, should agree with input_data first dimension definition.
-    col_array : np.ndarray
-        The column array, should agree with input_data second dimension definition.
-    fft_sgn : int
-        The fft sign to use.
-    dimension : int
-        The dimension to apply along.
-    forward : bool
-        If True, this shifts forward (i.e. skews), otherwise applies in inverse
-        (i.e. deskew) direction.
+            out[rowidx, colidx] = input_data[rowidx, colidx] * np.exp(1j*2*np.pi*phase_val)
 
-    Returns
-    -------
-    np.ndarray
-    """
-
-    if np.all(delta_kcoa_poly == 0):
-        return input_data
-
-    delta_kcoa_poly_int = npp.polyint(delta_kcoa_poly, axis=dimension)
-    if forward:
-        fft_sgn *= -1
-    return input_data*np.exp(1j*fft_sgn*2*np.pi*npp.polygrid2d(
-        row_array, col_array, delta_kcoa_poly_int), dtype=input_data.dtype)
+    return out
 
 
-# TODO rewrite/optimize.  This is mostly a copy/paste of sarpy.processing.sicd.spectral_taper._apply_1d_spectral_taper
 def _deskew(cdata, mdata, axis, forward):
     axis_index = {'Row': 0, 'Col': 1}[axis]
     axis_mdata = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[axis]
 
-    xrow = (np.arange(mdata.ImageData.FirstRow, mdata.ImageData.FirstRow + mdata.ImageData.NumRows)
-            - mdata.ImageData.SCPPixel.Row) * mdata.Grid.Row.SS
-    ycol = (np.arange(mdata.ImageData.FirstCol, mdata.ImageData.FirstCol + mdata.ImageData.NumCols)
-            - mdata.ImageData.SCPPixel.Col) * mdata.Grid.Col.SS
+    row_ss = mdata.Grid.Row.SS
+    row_0 = (mdata.ImageData.FirstRow - mdata.ImageData.SCPPixel.Row) * row_ss
+    col_ss = mdata.Grid.Col.SS
+    col_0 = (mdata.ImageData.FirstCol - mdata.ImageData.SCPPixel.Col) * col_ss
 
     delta_k_coa_poly = np.array([[0.0]]) if axis_mdata.DeltaKCOAPoly is None else axis_mdata.DeltaKCOAPoly.Coefs
 
     if not np.all(delta_k_coa_poly == 0):
+        phase_poly = npp.polyint(delta_k_coa_poly, axis=axis_index) * axis_mdata.Sgn
+        if forward:
+            phase_poly *= -1
         with benchmark.howlong('apply_skew'):
-            cdata = _apply_skew_poly(cdata, delta_k_coa_poly, row_array=xrow, col_array=ycol,
-                                     fft_sgn=axis_mdata.Sgn, dimension=axis_index, forward=forward)
+            cdata = _apply_phase_poly(cdata, phase_poly, row_0, row_ss, col_0, col_ss)
     return cdata
 
 

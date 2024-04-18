@@ -4,12 +4,87 @@ __classification__ = "UNCLASSIFIED"
 import numba
 import numpy as np
 
+from sarpy.fast_processing import benchmark
+
 
 @numba.njit(parallel=True)
 def _mean(data):
     """numba parallelized numpy.mean"""
     # TODO only compute over pixels covered by the valid data polygon
     return np.mean(data)  # TODO sarpy has nan and inf protection return np.mean(data[np.isfinite(data)])
+
+
+@numba.njit(parallel=True)
+def _median(data):
+    """numba parallelized median"""
+    # Compute min/max to determine range of histogram
+    max_vals = np.empty(data.shape[0], data.dtype)
+    min_vals = np.empty(data.shape[0], data.dtype)
+    for rowidx in numba.prange(data.shape[0]):
+        max_vals[rowidx] = data[rowidx, 0]
+        min_vals[rowidx] = data[rowidx, 0]
+        for colidx in range(1, data.shape[1]):
+            if data[rowidx, colidx] > max_vals[rowidx]:
+                max_vals[rowidx] = data[rowidx, colidx]
+            if data[rowidx, colidx] < min_vals[rowidx]:
+                min_vals[rowidx] = data[rowidx, colidx]
+
+    min_val = min(min_vals)
+    max_val = max(max_vals)
+    if max_val == min_val:
+        return min_val
+
+    # Compute histogram with bins based upon data size
+    npts = data.shape[0] * data.shape[1]
+    num_threads = numba.get_num_threads()
+    num_rows = data.shape[0]
+    num_bins = int(np.round(np.sqrt(npts)))
+    hist_0 = min_val
+    hist_ss = (max_val - min_val) / (num_bins - 1)
+    hist_inv_ss = 1 / hist_ss
+    hist_edges = hist_0 + np.arange(num_bins + 1) * hist_ss
+    chunk_edges = np.linspace(0, num_rows, num_threads+1).astype(np.int64)
+    chunk_start = chunk_edges[:-1]
+    chunk_stop = chunk_edges[1:]
+    chunk_counts = np.zeros((num_threads, num_bins), dtype=np.int64)
+    for chunkidx in numba.prange(num_threads):
+        for rowidx in range(chunk_start[chunkidx], chunk_stop[chunkidx]):
+            for colidx in range(data.shape[1]):
+                binidx = int(round((data[rowidx, colidx] - hist_0) * hist_inv_ss))
+                if data[rowidx, colidx] >= hist_edges[binidx]:
+                    chunk_counts[chunkidx, binidx] += 1
+                else:
+                    chunk_counts[chunkidx, binidx-1] += 1
+
+    counts = np.sum(chunk_counts, axis=0)
+    desired_index = npts // 2  # This is equivalent to numpy.percentile(data, 50, method='higher')
+    accum = 0
+    for binidx in range(num_bins):
+        if (accum + counts[binidx]) > desired_index:
+            break
+        else:
+            accum += counts[binidx]
+
+    # Threaded culling of data values to those in histogram bin containing the median value
+    vals = np.empty(shape=(counts[binidx], ), dtype=data.dtype)
+    chunk_save_start = np.cumsum(chunk_counts[:, binidx])
+
+    for chunkidx in numba.prange(num_threads):
+        if chunkidx == 0:
+            chunk_save_idx = 0
+        else:
+            chunk_save_idx = chunk_save_start[chunkidx - 1]
+        for rowidx in range(chunk_start[chunkidx], chunk_stop[chunkidx]):
+            for colidx in range(data.shape[1]):
+                if hist_edges[binidx] <= data[rowidx, colidx] < hist_edges[binidx+1]:
+                    vals[chunk_save_idx] = data[rowidx, colidx]
+                    chunk_save_idx += 1
+
+    # Compute median value from culled data
+    perc = float(desired_index - accum) / (counts[binidx] - 1) * 100
+    with numba.objmode(med_val='f8'):
+        med_val = np.percentile(vals, perc)
+    return med_val
 
 
 @numba.njit(parallel=True)
@@ -130,7 +205,11 @@ def gdm(data, *, weighting, graze_deg, slope_deg):
     """
 
     data_mean = _mean(data)
-    data_median = np.median(data)
+    with benchmark.howlong('median'):
+        if data.size < 5e8:
+            data_median = np.median(data)
+        else:
+            data_median = _median(data)
     c_l, c_h = _gdm_cutoff_values(data_mean, data_median, weighting, np.deg2rad(graze_deg), np.deg2rad(slope_deg))
     return amp_to_dens_uint8(data,
                              dmin=30,

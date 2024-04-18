@@ -65,7 +65,8 @@ def _do_numba_projection(proj_helper, ortho_bounds, input_origin_row, input_orig
 
 @numba.njit
 def _cubic_interpolate(y0, y1, y2, y3, x):
-    return y1 + 0.5 * x*(y2 - y0 + x*(2.0*y0 - 5.0*y1 + 4.0*y2 - y3 + x*(3.0)*(y1 - y2) + y3 - y0))
+    """Catmull-Rom cubic spline"""
+    return y1 + 0.5 * x*(y2 - y0 + x*(2.0*y0 - 5.0*y1 + 4.0*y2 - y3 + x*(3.0*(y1 - y2) + y3 - y0)))
 
 
 @numba.njit
@@ -90,8 +91,8 @@ def _do_interp_bilinear(input_data,
                         col):
     if (row < 0
             or col < 0
-            or row > input_data.shape[0] - 1
-            or col > input_data.shape[1] - 1):
+            or row >= input_data.shape[0] - 1
+            or col >= input_data.shape[1] - 1):
         return 0
     int_row = np.int64(row)
     int_col = np.int64(col)
@@ -113,8 +114,8 @@ def _do_interp_bicubic(input_data,
                        col):
     if (row < 0
             or col < 0
-            or row > input_data.shape[0] - 1
-            or col > input_data.shape[1] - 1):
+            or row >= input_data.shape[0] - 1
+            or col >= input_data.shape[1] - 1):
         return 0
     int_row = np.int64(row)
     int_col = np.int64(col)

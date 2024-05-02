@@ -37,7 +37,7 @@ def test__do_interp(interp_func, scipy_order, rtol):
     np.testing.assert_allclose(scipy_computed, sarpy_computed)
 
     # check between pixels
-    x += np.arange(data.shape[0] - 3) + 1.5
+    x = np.arange(data.shape[0] - 3) + 1.5
     y = np.arange(data.shape[1] - 3) + 1.5
     scipy_computed = rbs(x, y)
     sarpy_computed = np.empty((x.size, y.size))

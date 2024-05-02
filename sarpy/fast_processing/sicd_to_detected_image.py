@@ -220,10 +220,7 @@ def _projection_info(reader):
         'row_spacing': row_sample_spacing,
         'col_spacing': col_sample_spacing,
     }
-    try:
-        proj_helper = projection_helper.PGRatPolyProjection(**ph_kwargs)
-    except projection_helper.SarpyRatPolyError:
-        proj_helper = projection_helper.PGProjection(**ph_kwargs)
+    proj_helper = projection_helper.PGProjection(**ph_kwargs)
 
     ortho_helper = NearestNeighborMethod(
         reader,

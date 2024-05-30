@@ -38,6 +38,10 @@ release points are not being annotated in GitHub.
 - NITF image subheader parsing when there are more than 9 bands
 - Population of SIDD ExploitationFeatures resolution metadata when processed from a SICD
 - Fix BANDSB implementation to parse correctly
+- SingleLUTFormatFunction application for LUT with more than one dimension
+- SIDD NITF IALVL/IDLVL for NITFs consisting of multiple image segments and/or product images
+- Reading/writing of uncompressed NITF image segments with two complex-component bands interleaved by block/row
+- Replace deprecated `matplotlib.cm.get_cmap` with `matplotlib.pyplot.get_cmap`
 
 ## [1.3.58] - 2023-08-07
 ### Added

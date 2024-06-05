@@ -210,7 +210,7 @@ def _projection_info(reader):
 
         gpxy_resolutions = np.abs(m_gpxy_spxy @ m_spxy_il @ np.array([delta_xrow, delta_ycol]))
 
-        sample_spacing = min(gpxy_resolutions) / 1.5
+        sample_spacing = 0.886 * min(gpxy_resolutions) / 1.5
         row_sample_spacing = sample_spacing
         col_sample_spacing = sample_spacing
         default_ortho_bounds = None

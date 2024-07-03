@@ -88,7 +88,7 @@ MIT license.
 
 Dependencies
 ------------
-The core library functionality depends only on `numpy >= 1.11.0` and `scipy`. 
+The core library functionality depends only on `numpy` and `scipy`. 
 
 Optional Dependencies and Behavior
 ----------------------------------
@@ -154,7 +154,7 @@ Changes to sarpy for the sole purpose of supporting a Python version beyond
 end-of-life are unlikely to be considered.
 
 Information regarding any discovered bugs would be greatly appreciated, so please
-feel free to create a GitHub issue. If more appropriate, contact wade.c.schwartzkopf@nga.mil.
+feel free to create a GitHub issue. If more appropriate, contact richard.m.naething@nga.mil.
 
 Integration Branches
 --------------------

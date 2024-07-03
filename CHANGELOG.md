@@ -19,6 +19,8 @@ release points are not being annotated in GitHub.
 - Support reading CPHDs with an AmpSF PVP whose Data/SignalArrayFormat is CF8
 - Unit tests for `sarpy/consistency/sidd_consistency.py`
 - Support for MATESA TRE
+- Support reading/writing CPHDs with compressed signal arrays
+- Support for numpy 2.0
 ### Fixed
 - `sarpy.io.kml.add_polygon` coordinate conditioning for older numpy versions
 - Replace unsupported `pillow` constant `Image.ANTIALIAS` with `Image.LANCZOS`
@@ -42,6 +44,8 @@ release points are not being annotated in GitHub.
 - SIDD NITF IALVL/IDLVL for NITFs consisting of multiple image segments and/or product images
 - Reading/writing of uncompressed NITF image segments with two complex-component bands interleaved by block/row
 - Replace deprecated `matplotlib.cm.get_cmap` with `matplotlib.pyplot.get_cmap`
+- ReferencePoint attribute in SIDD MeasurementType objects
+- Sentinel clutter radiometric polynomials are no longer transposed
 
 ## [1.3.58] - 2023-08-07
 ### Added

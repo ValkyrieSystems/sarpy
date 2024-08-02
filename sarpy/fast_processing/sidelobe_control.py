@@ -5,13 +5,12 @@ __classification__ = "UNCLASSIFIED"
 import copy
 import logging
 
-import numba
 import numpy as np
-import numpy.polynomial.polynomial as npp
 import scipy.fft
 import scipy.interpolate as spi
 
 from sarpy.fast_processing import read_sicd
+from sarpy.fast_processing import deskew
 from sarpy.io.complex.sicd_elements.Grid import WgtTypeType
 from sarpy.processing.sicd.spectral_taper import Taper
 import sarpy.processing.sicd.windows as windows  # TODO migrate to sarpy2
@@ -30,7 +29,7 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
     sicd_metadata: `sarpy.io.complex.sicd_elements.SICD.SICDType`
         SICD Metadata object
     new_weights: `numpy.ndarray`
-        1-D array of desired weighting.  Will be applied in both row and col directions.
+        1-D array of desired weighting.  Will be applied to both row and col axes.
         Existing weighting will be removed.
     window_name: str
         Name of the window to record in SICD metadata
@@ -47,70 +46,20 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
     """
     # TODO make sure Chips are supported
     new_weights = np.asarray(new_weights)
-    for direction in ('Row', 'Col'):
-        existing_window = _get_sicd_wgt_funct(sicd_metadata, direction, len(new_weights))
-        both_windows = new_weights / np.maximum(existing_window, 0.01 * np.max(existing_window))
-
+    for axis in ('Row', 'Col'):
         # deskew
         with benchmark.howlong("deskew"):
-            data = _deskew(data, sicd_metadata, direction, forward=False)
+            data, sicd_metadata = deskew.sicd_to_sicd(data, sicd_metadata, axis)
+
+        existing_window = _get_sicd_wgt_funct(sicd_metadata, axis, len(new_weights))
+        both_windows = new_weights / np.maximum(existing_window, 0.01 * np.max(existing_window))
 
         # FFT # Mult # IFFT
         with benchmark.howlong("fft_window_ifft"):
-            data = _fft_window_ifft(data, sicd_metadata, direction, both_windows)
-
-        with benchmark.howlong("redeskew"):
-            # reskew?  # TODO update metadata instead of reskewing
-            data = _deskew(data, sicd_metadata, direction, forward=True)
+            data = _fft_window_ifft(data, sicd_metadata, axis, both_windows)
 
     new_sicd_metadata = updated_sicd_metadata(sicd_metadata, new_weights, window_name, window_parameters)
     return data, new_sicd_metadata
-
-
-@numba.njit(parallel=True)
-def _apply_phase_poly(
-        input_data,
-        phase_poly,
-        row_0,
-        row_ss,
-        col_0,
-        col_ss):
-    """numba parallelized phase poly application"""
-    out = np.empty_like(input_data)
-    for rowidx in numba.prange(out.shape[0]):
-        row_val = row_0 + rowidx * row_ss
-        col_poly = phase_poly[-1, :]
-        for ndx in range(phase_poly.shape[0] - 1, 0, -1):
-            col_poly = col_poly * row_val + phase_poly[ndx - 1, :]
-        for colidx in range(out.shape[1]):
-            col_val = col_0 + colidx * col_ss
-            phase_val = col_poly[-1]
-            for ndx in range(col_poly.shape[0] - 1, 0, -1):
-                phase_val = phase_val * col_val + col_poly[ndx - 1]
-
-            out[rowidx, colidx] = input_data[rowidx, colidx] * np.exp(1j*2*np.pi*phase_val)
-
-    return out
-
-
-def _deskew(cdata, mdata, axis, forward):
-    axis_index = {'Row': 0, 'Col': 1}[axis]
-    axis_mdata = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[axis]
-
-    row_ss = mdata.Grid.Row.SS
-    row_0 = (mdata.ImageData.FirstRow - mdata.ImageData.SCPPixel.Row) * row_ss
-    col_ss = mdata.Grid.Col.SS
-    col_0 = (mdata.ImageData.FirstCol - mdata.ImageData.SCPPixel.Col) * col_ss
-
-    delta_k_coa_poly = np.array([[0.0]]) if axis_mdata.DeltaKCOAPoly is None else axis_mdata.DeltaKCOAPoly.Coefs
-
-    if not np.all(delta_k_coa_poly == 0):
-        phase_poly = npp.polyint(delta_k_coa_poly, axis=axis_index) * axis_mdata.Sgn
-        if forward:
-            phase_poly *= -1
-        with benchmark.howlong('apply_skew'):
-            cdata = _apply_phase_poly(cdata, phase_poly, row_0, row_ss, col_0, col_ss)
-    return cdata
 
 
 def _fft_window_ifft(cdata, mdata, axis, window_vals):

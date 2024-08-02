@@ -1,35 +1,31 @@
 __classification__ = "UNCLASSIFIED"
 
-import numpy as np
-import numpy.polynomial.polynomial as npp
+import pathlib
+
+import pytest
 
 import sarpy.fast_processing.sidelobe_control
 
+import tests
 
-def test_apply_phase_poly():
-    rng = np.random.default_rng(12345)
-    input_data = (
-        rng.random((47, 51, 2), dtype=np.float32).view(dtype=np.complex64).squeeze()
-    )
-    phase_poly = np.linspace(-10, 10, 12).reshape((3, 4))
-    r0 = -2.4
-    rss = 0.11
-    c0 = 8.1
-    css = 1.3
-    xx, yy = np.meshgrid(
-        r0 + rss * np.arange(input_data.shape[0]),
-        c0 + css * np.arange(input_data.shape[1]),
-        indexing="ij",
-    )
-    expected_output = (
-        np.exp(1j * 2 * np.pi * npp.polyval2d(xx, yy, phase_poly)) * input_data
-    )
-    actual_output = sarpy.fast_processing.sidelobe_control._apply_phase_poly(
-        input_data,
-        phase_poly,
-        row_0=r0,
-        row_ss=rss,
-        col_0=c0,
-        col_ss=css,
-    )
-    assert np.allclose(actual_output, expected_output)
+
+complex_file_types = tests.find_test_data_files(
+    pathlib.Path(__file__).parents[1] / "io/complex/complex_file_types.json"
+)
+
+
+@pytest.fixture(scope="module")
+def sicd_file():
+    for file in complex_file_types.get("SICD", []):
+        if pathlib.Path(file).name == "sicd_example_RMA_RGZERO_RE16I_IM16I.nitf":
+            return file
+    pytest.skip("sicd test file not found")
+
+
+@pytest.mark.parametrize('sidelobe_control', ['Uniform', 'Taylor'])
+def test_smoke(sicd_file, tmp_path, sidelobe_control):
+    out_sicd_file = tmp_path / 'smoke.sicd'
+    sarpy.fast_processing.sidelobe_control.main([str(sicd_file),
+                                                 str(out_sicd_file),
+                                                 '--sidelobe-control', sidelobe_control])
+    assert out_sicd_file.exists()

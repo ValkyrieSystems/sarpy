@@ -5,14 +5,13 @@ __classification__ = "UNCLASSIFIED"
 import copy
 import logging
 
-import numba
 import numpy as np
-import numpy.polynomial.polynomial as npp
 import scipy.fft
 
-from sarpy.fast_processing import read_sicd
 import sarpy.fast_processing.backend
 from sarpy.fast_processing import benchmark
+from sarpy.fast_processing import deskew
+from sarpy.fast_processing import read_sicd
 
 
 def sicd_to_sicd(data, sicd_metadata, desired_osr):
@@ -38,77 +37,27 @@ def sicd_to_sicd(data, sicd_metadata, desired_osr):
     # TODO make sure Chips are supported
     mdata = sicd_metadata
     inwork_data = data
-    for direction in ('Row', 'Col'):
-        resamp_params = _get_sicd_resamp_params(mdata, direction, desired_osr)
+    for axis in ('Row', 'Col'):
+        resamp_params = _get_sicd_resamp_params(mdata, axis, desired_osr)
         if resamp_params['fft1_size'] == resamp_params['fft2_size']:
             continue
 
         # deskew
-        with benchmark.howlong(f"{direction} deskew"):
-            deskew_data = _deskew(inwork_data, mdata, direction, forward=False)
-            del inwork_data
+        with benchmark.howlong(f"{axis} deskew"):
+            deskew_data, mdata = deskew.sicd_to_sicd(inwork_data, mdata, axis)
+            if inwork_data is not data:
+                del inwork_data
 
         # FFT # Mult # IFFT
-        with benchmark.howlong(f"{direction} fft_pad_ifft"):
-            upsamp_data = _fft_pad_ifft(deskew_data, direction, resamp_params)
+        with benchmark.howlong(f"{axis} fft_pad_ifft"):
+            inwork_data = _fft_pad_ifft(deskew_data, axis, resamp_params)
             del deskew_data
-            mdata = updated_sicd_metadata(mdata, direction, resamp_params)
-
-        with benchmark.howlong(f"{direction} reskew"):
-            # reskew?  # TODO update metadata instead of reskewing
-            inwork_data = _deskew(upsamp_data, mdata, direction, forward=True)
-            del upsamp_data
+            mdata = updated_sicd_metadata(mdata, axis, resamp_params)
 
     return inwork_data, mdata
 
 
-@numba.njit(parallel=True)
-def _apply_phase_poly(
-        input_data,
-        phase_poly,
-        row_0,
-        row_ss,
-        col_0,
-        col_ss):
-    """numba parallelized phase poly application"""
-    out = np.empty_like(input_data)
-    for rowidx in numba.prange(out.shape[0]):
-        row_val = row_0 + rowidx * row_ss
-        col_poly = phase_poly[-1, :]
-        for ndx in range(phase_poly.shape[0] - 1, 0, -1):
-            col_poly = col_poly * row_val + phase_poly[ndx - 1, :]
-        for colidx in range(out.shape[1]):
-            col_val = col_0 + colidx * col_ss
-            phase_val = col_poly[-1]
-            for ndx in range(col_poly.shape[0] - 1, 0, -1):
-                phase_val = phase_val * col_val + col_poly[ndx - 1]
-
-            out[rowidx, colidx] = input_data[rowidx, colidx] * np.exp(1j*2*np.pi*phase_val)
-
-    return out
-
-
-def _deskew(cdata, mdata, axis, forward):
-    axis_index = {'Row': 0, 'Col': 1}[axis]
-    axis_mdata = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[axis]
-
-    row_ss = mdata.Grid.Row.SS
-    row_0 = (mdata.ImageData.FirstRow - mdata.ImageData.SCPPixel.Row) * row_ss
-    col_ss = mdata.Grid.Col.SS
-    col_0 = (mdata.ImageData.FirstCol - mdata.ImageData.SCPPixel.Col) * col_ss
-
-    delta_k_coa_poly = np.array([[0.0]]) if axis_mdata.DeltaKCOAPoly is None else axis_mdata.DeltaKCOAPoly.Coefs
-
-    if not np.all(delta_k_coa_poly == 0):
-        phase_poly = npp.polyint(delta_k_coa_poly, axis=axis_index) * axis_mdata.Sgn
-        if forward:
-            phase_poly *= -1
-        with benchmark.howlong('apply_skew'):
-            cdata = _apply_phase_poly(cdata, phase_poly, row_0, row_ss, col_0, col_ss)
-    return cdata
-
-
-def _fft_pad_ifft(cdata, direction, resamp_params):
+def _fft_pad_ifft(cdata, axis, resamp_params):
 
     # Make resamp params local
     fft1_size = resamp_params['fft1_size']
@@ -119,7 +68,7 @@ def _fft_pad_ifft(cdata, direction, resamp_params):
     extract_offset = resamp_params['extract_offset']
     num_samps_out = resamp_params['num_samps_out']
 
-    axis_index = {'Row': 0, 'Col': 1}[direction]
+    axis_index = {'Row': 0, 'Col': 1}[axis]
     fft1_shape = list(cdata.shape)
     fft1_shape[axis_index] = fft1_size
     fft2_shape = list(cdata.shape)
@@ -170,11 +119,11 @@ def _fft_pad_ifft(cdata, direction, resamp_params):
     return out_cdata
 
 
-def updated_sicd_metadata(sicd_metadata, direction, resamp_params):
+def updated_sicd_metadata(sicd_metadata, axis, resamp_params):
     """Update SICD metadata to new reference location and sample spacing"""
 
     mdata = copy.deepcopy(sicd_metadata)
-    if direction == 'Row':
+    if axis == 'Row':
         mdata.Grid.Row.SS = sicd_metadata.Grid.Row.SS / resamp_params['resample_rate']
         mdata.ImageData.SCPPixel.Row = resamp_params['new_ref_index']
         mdata.ImageData.NumRows = resamp_params['num_samps_out']
@@ -196,10 +145,10 @@ def updated_sicd_metadata(sicd_metadata, direction, resamp_params):
     return mdata
 
 
-def _get_sicd_resamp_params(mdata, direction, desired_osr):
-    grid_dir = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[direction]
-    ref_index = {'Row': mdata.ImageData.SCPPixel.Row, 'Col': mdata.ImageData.SCPPixel.Col}[direction]
-    num_samps = {'Row': mdata.ImageData.NumRows, 'Col': mdata.ImageData.NumCols}[direction]
+def _get_sicd_resamp_params(mdata, axis, desired_osr):
+    grid_dir = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[axis]
+    ref_index = {'Row': mdata.ImageData.SCPPixel.Row, 'Col': mdata.ImageData.SCPPixel.Col}[axis]
+    num_samps = {'Row': mdata.ImageData.NumRows, 'Col': mdata.ImageData.NumCols}[axis]
     current_osr = 1 / (grid_dir.SS * grid_dir.ImpRespBW)
     minimum_pad = int(min(200 * current_osr, 0.1 * num_samps))
     fft1_size = scipy.fft.next_fast_len(num_samps + minimum_pad)

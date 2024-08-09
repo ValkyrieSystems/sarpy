@@ -185,7 +185,6 @@ def _projection_info(reader):
     """Compute information necessary for ground projection"""
     # TODO refactor this function to run from SICD XML
     from sarpy.processing.ortho_rectify import NearestNeighborMethod
-    from sarpy.processing.ortho_rectify.base import OrthorectificationIterator
     from sarpy.processing.ortho_rectify import projection_helper
 
     # Based on sarpy.processing.ortho_rectify.ortho_methods.OrthorectificationHelper.set_index_and_proj_helper
@@ -232,8 +231,7 @@ def _projection_info(reader):
         _, ortho_rectangle = ortho_helper.bounds_to_rectangle(default_ortho_bounds)
         ortho_helper._default_physical_bounds = ortho_helper.proj_helper.ortho_to_ecf(ortho_rectangle)
 
-    ortho_iterator = OrthorectificationIterator(ortho_helper)
-    return ortho_helper.proj_helper, ortho_iterator.ortho_bounds
+    return ortho_helper.proj_helper, ortho_helper.get_valid_ortho_bounds()
 
 
 if __name__ == '__main__':

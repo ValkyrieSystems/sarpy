@@ -76,22 +76,20 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
     out_shape = list(cdata.shape)
     out_shape[axis_index] = num_samps_out
 
-    with benchmark.howlong("fft"):
+    with benchmark.howlong("fft1 in copy"):
         # Fourier Transform input data
         fft1_buff = np.zeros_like(cdata, shape=fft1_shape)
         fft1_in_slices = [slice(None), slice(None)]
         fft1_in_slices[axis_index] = slice(insert_offset, insert_offset + num_samps_in)
         fft1_buff[tuple(fft1_in_slices)] = cdata
+
+    with benchmark.howlong("fft"):
+        # Perform forward transform
         fft1 = scipy.fft.fft(fft1_buff, n=fft1_size, axis=axis_index, norm="forward", workers=-1)
         del fft1_buff
 
-    with benchmark.howlong("apply phase"):
-        # Apply phase shift so that the reference index will be an integer
-        phase_vec = np.exp(2*np.pi*1j*scipy.fft.fftfreq(fft2_size) * frac_shift).astype(np.complex64)
-        phase_vec_slices = [np.newaxis, np.newaxis]
-        phase_vec_slices[axis_index] = slice(None)
-
-        fft2_buff = np.zeros_like(cdata, shape=fft2_shape)
+    with benchmark.howlong("fft transfer copy"):
+        # Copy from fft1 to fft2
         min_size = min(fft1_size, fft2_size)
         neg_start = min_size//2
         pos_end = min_size - neg_start
@@ -99,9 +97,16 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
         fft_transfer_slices1[axis_index] = (slice(-neg_start, None))
         fft_transfer_slices2 = [slice(None), slice(None)]
         fft_transfer_slices2[axis_index] = (slice(None, pos_end))
+        fft2_buff = np.zeros_like(cdata, shape=fft2_shape)
         fft2_buff[tuple(fft_transfer_slices1)] = fft1[tuple(fft_transfer_slices1)]
         fft2_buff[tuple(fft_transfer_slices2)] = fft1[tuple(fft_transfer_slices2)]
         del fft1
+
+    with benchmark.howlong("apply phase"):
+        # Apply phase shift so that the reference index will be an integer
+        phase_vec = np.exp(2*np.pi*1j*scipy.fft.fftfreq(fft2_size) * frac_shift).astype(np.complex64)
+        phase_vec_slices = [np.newaxis, np.newaxis]
+        phase_vec_slices[axis_index] = slice(None)
         fft2_buff = fft2_buff * phase_vec[tuple(phase_vec_slices)]
 
     with benchmark.howlong("ifft"):
@@ -125,55 +130,57 @@ def updated_sicd_metadata(sicd_metadata, axis, resamp_params):
     mdata = copy.deepcopy(sicd_metadata)
     if axis == 'Row':
         mdata.Grid.Row.SS = sicd_metadata.Grid.Row.SS / resamp_params['resample_rate']
-        mdata.ImageData.SCPPixel.Row = resamp_params['new_ref_index']
+        mdata.ImageData.SCPPixel.Row = resamp_params['resampled_scp_index']
+        mdata.ImageData.FirstRow = 0
         mdata.ImageData.NumRows = resamp_params['num_samps_out']
         mdata.ImageData.FullImage.NumRows = resamp_params['num_samps_out']
         if mdata.ImageData.ValidData:
             for rowcol in mdata.ImageData.ValidData:
                 rowcol.Row = int(round((rowcol.Row - sicd_metadata.ImageData.SCPPixel.Row) * resamp_params['resample_rate']
-                                       + resamp_params['new_ref_index']))
+                                       + resamp_params['resampled_scp_index']))
     else:
         mdata.Grid.Col.SS = sicd_metadata.Grid.Col.SS / resamp_params['resample_rate']
-        mdata.ImageData.SCPPixel.Col = resamp_params['new_ref_index']
+        mdata.ImageData.SCPPixel.Col = resamp_params['resampled_scp_index']
+        mdata.ImageData.FirstCol = 0
         mdata.ImageData.NumCols = resamp_params['num_samps_out']
         mdata.ImageData.FullImage.NumCols = resamp_params['num_samps_out']
         if mdata.ImageData.ValidData:
             for rowcol in mdata.ImageData.ValidData:
                 rowcol.Col = int(round((rowcol.Col - sicd_metadata.ImageData.SCPPixel.Col) * resamp_params['resample_rate']
-                                       + resamp_params['new_ref_index']))
+                                       + resamp_params['resampled_scp_index']))
 
     return mdata
 
 
-def _get_sicd_resamp_params(mdata, axis, desired_osr):
-    grid_dir = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[axis]
-    ref_index = {'Row': mdata.ImageData.SCPPixel.Row, 'Col': mdata.ImageData.SCPPixel.Col}[axis]
-    num_samps = {'Row': mdata.ImageData.NumRows, 'Col': mdata.ImageData.NumCols}[axis]
+def _get_sicd_resamp_params(mdata, direction, desired_osr):
+    grid_dir = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[direction]
+    scp_index = {'Row': mdata.ImageData.SCPPixel.Row - mdata.ImageData.FirstRow,
+                 'Col': mdata.ImageData.SCPPixel.Col - mdata.ImageData.FirstCol}[direction]
+    num_samps = {'Row': mdata.ImageData.NumRows, 'Col': mdata.ImageData.NumCols}[direction]
     current_osr = 1 / (grid_dir.SS * grid_dir.ImpRespBW)
     minimum_pad = int(min(200 * current_osr, 0.1 * num_samps))
     fft1_size = scipy.fft.next_fast_len(num_samps + minimum_pad)
+    effective_pad = fft1_size - num_samps
+    insert_offset = effective_pad // 2
     fft2_size = scipy.fft.next_fast_len(int(np.ceil(fft1_size * desired_osr / current_osr)))
     rsr = fft2_size / fft1_size
-    effective_pad = fft1_size - num_samps
-    fft1_in_offset = effective_pad // 2
 
-    padded_ref_index = ref_index + fft1_in_offset
-    resampled_index = padded_ref_index * rsr
-    output_index = int(np.floor(resampled_index))
-    frac_index = resampled_index - output_index
-    keep_low = int(np.ceil(ref_index * rsr))
-    keep_high = int(np.ceil(((num_samps - 1) - ref_index) * rsr))
-    keep_total = keep_low + keep_high + 1
-    fft2_out_offset = output_index - keep_low
+    padded_scp_index = scp_index + insert_offset
+    resampled_scp_index = padded_scp_index * rsr
+    floor_scp_index = int(np.floor(resampled_scp_index))
+    frac_shift = resampled_scp_index - floor_scp_index
+    extract_offset = int(np.floor(insert_offset * rsr))
+    num_samps_out = int(np.ceil((insert_offset + num_samps - 1) * rsr)) - extract_offset + 1
+    resampled_scp_index = floor_scp_index - extract_offset
 
     return {'fft1_size': fft1_size,
             'fft2_size': fft2_size,
-            'insert_offset': fft1_in_offset,
+            'insert_offset': insert_offset,
             'num_samps_in': num_samps,
-            'frac_shift': frac_index,
-            'extract_offset': fft2_out_offset,
-            'num_samps_out': keep_total,
-            'new_ref_index': keep_low,
+            'frac_shift': frac_shift,
+            'extract_offset': extract_offset,
+            'num_samps_out': num_samps_out,
+            'resampled_scp_index': resampled_scp_index,
             'resample_rate': rsr}
 
 

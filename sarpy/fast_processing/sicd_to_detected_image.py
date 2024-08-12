@@ -7,6 +7,7 @@ import pathlib
 
 import numba
 import numpy as np
+import numpy.polynomial.polynomial as npp
 
 # TODO Refactor from sarpy2
 import sarpy.geometry.point_projection
@@ -14,9 +15,11 @@ import sarpy.processing.ortho_rectify
 import sarpy.processing.sicd.spectral_taper
 import sarpy.processing.sidd.sidd_structure_creation
 
+from sarpy.fast_processing import adjust_sicd_osr
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import projection
 from sarpy.fast_processing import sidelobe_control
+from sarpy.fast_processing import sva
 from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import remap
 
@@ -27,7 +30,7 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
     Args
     ----
     data: `numpy.ndarray`
-        SICD pixel array.  2D array of complex values.
+        SICD pixel array.  2D array of complex values sampled on the SICD grid.
     sicd_metadata: `sarpy.io.complex.sicd_elements.SICD.SICDType`
         SICD Metadata object
     sidd_version: int
@@ -130,6 +133,39 @@ def _clip_zero_inplace(data):
                 data[row, col] = 0
     return data
 
+def _scale_input_and_shift(coefs, scales, new_origins):
+    coefs = np.array(coefs)
+    shape = coefs.shape
+    assert len(shape) == len(scales) == len(new_origins)
+    for axis_ndx, (scale, new_origin) in enumerate(zip(scales, new_origins)):
+        moved_coefs = np.moveaxis(coefs, axis_ndx, -1)
+        flattened_coefs = moved_coefs.reshape((-1, shape[axis_ndx]))
+        for ndx in range(flattened_coefs.shape[0]):
+            poly = npp.Polynomial(flattened_coefs[ndx, :])
+            shifted_poly = poly.convert(domain=[0, scale], window=[new_origin, new_origin+1])
+            num_coefs = len(shifted_poly.coef)
+            flattened_coefs[ndx, :num_coefs] = shifted_poly.coef
+        inflated_coefs = flattened_coefs.reshape(moved_coefs.shape)
+        coefs = np.moveaxis(inflated_coefs, -1, axis_ndx)
+
+    return coefs
+
+def _kctr_polys_from_sicd_meta(sicd_metadata):
+    scales = (sicd_metadata.Grid.Row.SS, sicd_metadata.Grid.Col.SS)
+    shifts = (sicd_metadata.ImageData.SCPPixel.Row - sicd_metadata.ImageData.FirstRow,
+              sicd_metadata.ImageData.SCPPixel.Col - sicd_metadata.ImageData.FirstCol)
+    row_deltakcoa = (sicd_metadata.Grid.Row.DeltaKCOAPoly.Coefs if sicd_metadata.Grid.Row.DeltaKCOAPoly is not None
+                     else np.array([[0.0]]))
+    row_kctr_poly_rad = (sicd_metadata.Grid.Row.Sgn * (2 * np.pi) * scales[0]
+                         * _scale_input_and_shift(row_deltakcoa,
+                                                  scales, shifts))
+    col_deltakcoa = (sicd_metadata.Grid.Col.DeltaKCOAPoly.Coefs if sicd_metadata.Grid.Col.DeltaKCOAPoly is not None
+                     else np.array([[0.0]]))
+    col_kctr_poly_rad = (sicd_metadata.Grid.Col.Sgn * (2 * np.pi) * scales[1]
+                         * _scale_input_and_shift(col_deltakcoa,
+                                                  scales, shifts))
+
+    return row_kctr_poly_rad, col_kctr_poly_rad
 
 def main(args=None):
     """CLI utility for creating SIDD v3 NITFs from SICDs"""
@@ -140,8 +176,8 @@ def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('input_sicd', type=pathlib.Path, help="Path to input SICD")
     parser.add_argument('output_sidd', type=pathlib.Path, help="Path to write SIDD NITF")
-    parser.add_argument('--sidelobe-control', choices=['Skip', 'Uniform', 'Taylor'], default='Skip',
-                        help="Desired sidelobe control.  'Skip' retains weighting of input SICD.")
+    parser.add_argument('--sidelobe-control', choices=['Skip', 'Uniform', 'Taylor', 'SVA', 'DSVA', 'JIQ'],
+                        default='Skip', help="Desired sidelobe control.  'Skip' retains weighting of input SICD.")
     parser.add_argument('--sidd-version', default=3, type=int, choices=[1, 2, 3],
                         help="The version of the SIDD standard used.")
     parser.add_argument('--fft-backend', choices=['auto', 'mkl', 'scipy'], default='auto',
@@ -159,29 +195,65 @@ def main(args=None):
         with benchmark.howlong("SICDtoSIDD"):
             with benchmark.howlong('read'):
                 sicd_pixels, sicd_metadata = read_sicd.read_from_file(config.input_sicd)
-                with sarpy.io.complex.open(str(config.input_sicd)) as reader:
-                    # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
-                    proj_helper, ortho_bounds = _projection_info(reader)
 
             if config.sidelobe_control != 'Skip':
                 with benchmark.howlong('sidelobe'):
-                    window_name = config.sidelobe_control.upper()
-                    taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
-                    new_window = taper.get_vals(65, sym=True)
-                    new_params = taper.window_pars
-                    sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels, sicd_metadata,
-                                                                               new_window, window_name, new_params)
+                    if config.sidelobe_control.upper() in {'SVA', 'DSVA', 'JIQ'}:
+                        window_name = 'Uniform'
+                        taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
+                        new_window = taper.get_vals(65, sym=True)
+                        new_params = taper.window_pars
+                        sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                                                                                   sicd_metadata,
+                                                                                   new_window,
+                                                                                   window_name,
+                                                                                   new_params)
+                        if config.sidelobe_control.upper() == 'SVA':
+                            sicd_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(sicd_pixels,
+                                                                                      sicd_metadata,
+                                                                                      2.0)
+                            row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
+                            sicd_pixels = sva.uncoup_sva(sicd_pixels,
+                                                         row_kctr_poly_rad,
+                                                         col_kctr_poly_rad)
+                        elif config.sidelobe_control.upper() == 'DSVA':
+                            row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
+                            col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
+                            row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
+                            sicd_pixels = sva.d_sva(sicd_pixels,
+                                                    row_nyq_rate,
+                                                    col_nyq_rate,
+                                                    row_kctr_poly_rad,
+                                                    col_kctr_poly_rad)
+                        elif config.sidelobe_control.upper() == 'JIQ':
+                            sicd_pixels, sicd_metadata = sva.jiq_sicd(sicd_pixels,
+                                                                      sicd_metadata)
+                    else:
+                        window_name = config.sidelobe_control.upper()
+                        taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
+                        new_window = taper.get_vals(65, sym=True)
+                        new_params = taper.window_pars
+                        sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                                                                                   sicd_metadata,
+                                                                                   new_window,
+                                                                                   window_name,
+                                                                                   new_params)
 
-            new_pixels, new_meta = sicd_to_sidd(sicd_pixels, sicd_metadata,
-                                                proj_helper=proj_helper, ortho_bounds=ortho_bounds,
-                                                sidd_version=config.sidd_version)
+            with sarpy.io.complex.open(str(config.input_sicd)) as reader:
+                # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
+                proj_helper, ortho_bounds = _projection_info(reader, sicd_metadata)
+
+            sidd_pixels, sidd_meta = sicd_to_sidd(sicd_pixels, sicd_metadata,
+                                                  proj_helper=proj_helper, ortho_bounds=ortho_bounds,
+                                                  sidd_version=config.sidd_version)
 
             with benchmark.howlong('write'):
-                with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), new_meta, check_existence=False) as writer:
-                    writer.write_chip(new_pixels)
+                with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), sidd_meta,
+                                                      check_existence=False) as writer:
+                    writer.write_chip(sidd_pixels)
 
 
-def _projection_info(reader):
+def _projection_info(reader, sicd_meta):
     """Compute information necessary for ground projection"""
     # TODO refactor this function to run from SICD XML
     from sarpy.processing.ortho_rectify import NearestNeighborMethod
@@ -189,19 +261,19 @@ def _projection_info(reader):
 
     # Based on sarpy.processing.ortho_rectify.ortho_methods.OrthorectificationHelper.set_index_and_proj_helper
     try:
-        plane = reader.sicd_meta.RadarCollection.Area.Plane
+        plane = sicd_meta.RadarCollection.Area.Plane
         row_sample_spacing = plane.XDir.LineSpacing
         col_sample_spacing = plane.YDir.SampleSpacing
         default_ortho_bounds = np.array([plane.XDir.FirstLine, plane.XDir.FirstLine + plane.XDir.NumLines,
                                          plane.YDir.FirstSample, plane.YDir.FirstSample + plane.YDir.NumSamples],
                                         dtype=np.uint32)
     except AttributeError:
-        delta_xrow = 1.0 / reader.sicd_meta.Grid.Row.ImpRespBW
-        delta_ycol = 1.0 / reader.sicd_meta.Grid.Col.ImpRespBW
-        m_spxy_il = sarpy.geometry.point_projection.image_to_slant_sensitivity(reader.sicd_meta, delta_xrow, delta_ycol)
+        delta_xrow = 1.0 / sicd_meta.Grid.Row.ImpRespBW
+        delta_ycol = 1.0 / sicd_meta.Grid.Col.ImpRespBW
+        m_spxy_il = sarpy.geometry.point_projection.image_to_slant_sensitivity(sicd_meta, delta_xrow, delta_ycol)
 
-        graz = np.radians(reader.sicd_meta.SCPCOA.GrazeAng)
-        twst = np.radians(reader.sicd_meta.SCPCOA.TwistAng)
+        graz = np.radians(sicd_meta.SCPCOA.GrazeAng)
+        twst = np.radians(sicd_meta.SCPCOA.TwistAng)
         m_gpxy_spxy = np.array([
             [1.0 / np.cos(graz), 0],
             [np.tan(graz) * np.tan(twst), (1.0 / np.cos(twst))]
@@ -215,7 +287,7 @@ def _projection_info(reader):
         default_ortho_bounds = None
 
     ph_kwargs = {
-        'sicd': reader.sicd_meta,
+        'sicd': sicd_meta,
         'row_spacing': row_sample_spacing,
         'col_spacing': col_sample_spacing,
     }
@@ -225,6 +297,7 @@ def _projection_info(reader):
         reader,
         proj_helper=proj_helper,
     )
+    ortho_helper._sicd = sicd_meta
 
     # Finish up sarpy.processing.ortho_rectify.ortho_metods.OrthorectificationHelper.set_index_and_proj_helper
     if default_ortho_bounds is not None:

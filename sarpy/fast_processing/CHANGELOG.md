@@ -1,3 +1,6 @@
+## [1.3.59rc.dev6]
+- Added SVA module and added Uncoupled 2D Independent IQ SVA, 2D Double SVA, and 1D Joint IQ SVA as sidelobe control options in `sicd_to_detected_image`.
+
 ## [1.3.59rc.dev5]
 - Changed `sicd_to_detected_image` to compute SIDD extent using ValidData polygon when RadarCollection/Area is not available
 

@@ -66,3 +66,10 @@ def test_smoke_no_rc_plane(sicd_file_without_rc_plane, tmp_path):
     assert expected_urn.encode() in sidd_filename.read_bytes()
 
     assert sarpy.consistency.sidd_consistency.check_file(str(sidd_filename))
+
+
+@pytest.mark.parametrize('sva_method', ['SVA', 'DSVA', 'JIQ'])
+def test_sva_smoke(sicd_file, tmp_path, sva_method):
+    sidd_filename = tmp_path / 'smoke.sidd'
+    stdi.main([str(sicd_file), str(sidd_filename), '--sidelobe-control', sva_method])
+    assert sidd_filename.exists()

@@ -46,6 +46,11 @@ release points are not being annotated in GitHub.
 - Replace deprecated `matplotlib.cm.get_cmap` with `matplotlib.pyplot.get_cmap`
 - ReferencePoint attribute in SIDD MeasurementType objects
 - Sentinel clutter radiometric polynomials are no longer transposed
+- NITFWriter no longer closes passed in file objects
+- Various SICD and SIDD elements fixed to better match NGA standard
+- Fixed case where DTEDInterpolator applied geoid offset incorrectly
+- Improved DTEDInterpolator handling of missing DEMs
+- SIDD 3.0.0 point projection
 
 ## [1.3.58] - 2023-08-07
 ### Added

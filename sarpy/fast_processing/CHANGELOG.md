@@ -1,3 +1,6 @@
+## [1.3.59rc.dev9]
+- Added SVA EGR unit tests and made fixes to EGR algorithm
+
 ## [1.3.59rc.dev8]
 - Improved memory usage when writing SICD and SIDD
 

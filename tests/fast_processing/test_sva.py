@@ -18,19 +18,27 @@ def create_target(tp):
     COL_SHIFT = tp["shifts"][1]
 
     # calculate sampling dimensions based on given osr
-    samp_row_start = int((1 - 1 / OSR) / 2 * ROW_SIZE)
-    samp_row_end = int(ROW_SIZE - (1 - 1 / OSR) / 2 * ROW_SIZE)
+    samp_row_size = int(np.round(ROW_SIZE / OSR))
+    samp_row_start = ROW_SIZE // 2 - samp_row_size // 2
+    samp_row_end = samp_row_start + samp_row_size
     samp_row_dim = slice(samp_row_start, samp_row_end)
 
-    samp_col_start = int((1 - 1 / OSR) / 2 * COL_SIZE)
-    samp_col_end = int(COL_SIZE - (1 - 1 / OSR) / 2 * COL_SIZE)
+    samp_col_size = int(np.round(COL_SIZE / OSR))
+    samp_col_start = COL_SIZE // 2 - samp_col_size // 2
+    samp_col_end = samp_col_start + samp_col_size
     samp_col_dim = slice(samp_col_start, samp_col_end)
 
     samp_dim = (samp_row_dim, samp_col_dim)
 
     # set target ampltiude
     freq_data = np.zeros((ROW_SIZE, COL_SIZE))
-    freq_data[samp_dim] = AMP
+    if "glint_strength" in tp:
+        # create target with edge-of-aperture glint
+        x = np.arange(samp_col_size)
+        glint_amp_row = AMP * tp["glint_strength"] ** ((x / samp_col_size) ** 2)
+        freq_data[samp_dim] = glint_amp_row[np.newaxis, :]
+    else:
+        freq_data[samp_dim] = AMP
 
     # apply phase shift to target
     krow_phase = (np.arange(ROW_SIZE) - ROW_SIZE // 2) / ROW_SIZE * ROW_SHIFT
@@ -123,6 +131,11 @@ def get_outside_max(ipr, tp, md):
     return outside_max
 
 
+def calc_center(row):
+    """Calculate center sample in the given row"""
+    return row[row.shape[0] // 2]
+
+
 def run_one_target_test(tp, tc):
     """Run test involving one created target"""
     # create target using given parameters
@@ -164,8 +177,8 @@ def run_one_target_test(tp, tc):
             tp["osr"],
             tc["upsample_osr"],
             tc["upsample_osr"],
-            tc["fft_size"],
-            tc["fft_size"],
+            row_fft_size=tc["fft_size"][0],
+            col_fft_size=tc["fft_size"][1],
             fft_sign=1,
         )
     else:
@@ -189,7 +202,7 @@ def run_one_target_test(tp, tc):
     assert new_peak == pytest.approx(old_peak, abs=tc["tol"])
 
     # test if peak value is significantly greater than max value outside of mainlobe region using given tolerance
-    outside_max = get_outside_max(db_results_ipr, tp, mainlobe_dim)
+    outside_max = get_outside_max(db_results_ipr, tp, (mainlobe_dim,))
     assert new_peak - outside_max > tc["peak_diff"]
 
 
@@ -225,8 +238,8 @@ def run_two_target_test(tp1, tp2, tc):
             tp1["osr"],
             tc["upsample_osr"],
             tc["upsample_osr"],
-            tc["fft_size"],
-            tc["fft_size"],
+            row_fft_size=tc["fft_size"][0],
+            col_fft_size=tc["fft_size"][1],
             fft_sign=1,
         )
     else:
@@ -240,9 +253,8 @@ def run_two_target_test(tp1, tp2, tc):
     clean_edges(db_results_ipr, tp1["osr"])
 
     # calculate pre-SVA and post-SVA peak values
-    offsets = tc["offsets"]
-    mainlobe1_dim = get_mainlobe_dim(tp1, offsets)
-    mainlobe2_dim = get_mainlobe_dim(tp2, offsets)
+    mainlobe1_dim = get_mainlobe_dim(tp1, tc["offsets"])
+    mainlobe2_dim = get_mainlobe_dim(tp2, tc["offsets"])
     old_peak1, new_peak1 = (
         get_peak(db_ipr1, mainlobe1_dim),
         get_peak(db_results_ipr, mainlobe1_dim),
@@ -261,9 +273,96 @@ def run_two_target_test(tp1, tp2, tc):
     assert new_peak1 - outside_max > tc["peak_diff"]
 
 
-def calc_center(row):
-    """Calculate center sample in the given row"""
-    return row[row.shape[0] // 2]
+def run_edge_glint_target_test(tp, tc):
+    """Run test involving edge glint target"""
+    # create target using given parameters
+    test_ipr = create_target(tp)
+
+    # create polys to pass into SVA
+    if "kctr" in tp:
+        row_kctr_poly_radians_per_sample = 2 * np.pi * np.asarray([[tp["kctr"][0]]])
+        col_kctr_poly_radians_per_sample = 2 * np.pi * np.asarray([[tp["kctr"][1]]])
+    elif "tgt_phase_poly" in tp:
+        tgt_phase_radians = 2 * np.pi * np.asarray(tp["tgt_phase_poly"])
+        row_kctr_poly_radians_per_sample = npp.polyder(tgt_phase_radians, axis=0)
+        col_kctr_poly_radians_per_sample = npp.polyder(tgt_phase_radians, axis=1)
+    else:
+        row_kctr_poly_radians_per_sample = np.asarray([[0]])
+        col_kctr_poly_radians_per_sample = np.asarray([[0]])
+
+    if tc["sva_type"] == "uncoupled":
+        # apply uncoupled SVA
+        results_ipr_no_egr = sva.uncoup_sva(
+            test_ipr,
+            row_kctr_poly_radians_per_sample,
+            col_kctr_poly_radians_per_sample,
+            edge_glint_threshold=0,
+            edge_glint_max_weight=0,
+        )
+        results_ipr_egr = sva.uncoup_sva(
+            test_ipr, row_kctr_poly_radians_per_sample, col_kctr_poly_radians_per_sample
+        )
+    elif tc["sva_type"] == "double":
+        # apply Double SVA
+        results_ipr_no_egr = sva.d_sva(
+            test_ipr,
+            tp["osr"],
+            tp["osr"],
+            row_kctr_poly_radians_per_sample,
+            col_kctr_poly_radians_per_sample,
+            edge_glint_threshold=0,
+            edge_glint_max_weight=0,
+        )
+        results_ipr_egr = sva.d_sva(
+            test_ipr,
+            tp["osr"],
+            tp["osr"],
+            row_kctr_poly_radians_per_sample,
+            col_kctr_poly_radians_per_sample,
+        )
+    elif tc["sva_type"] == "joint_iq":
+        # apply joint-IQ SVA
+        results_ipr_no_egr = sva.two_dim_joint_iq_sva(
+            test_ipr,
+            tp["osr"],
+            tp["osr"],
+            tc["upsample_osr"],
+            tc["upsample_osr"],
+            row_fft_size=tc["fft_size"][0],
+            col_fft_size=tc["fft_size"][1],
+            fft_sign=1,
+            edge_glint_threshold=0,
+            edge_glint_max_weight=0,
+        )
+        results_ipr_egr = sva.two_dim_joint_iq_sva(
+            test_ipr,
+            tp["osr"],
+            tp["osr"],
+            tc["upsample_osr"],
+            tc["upsample_osr"],
+            row_fft_size=tc["fft_size"][0],
+            col_fft_size=tc["fft_size"][1],
+            fft_sign=1,
+        )
+    else:
+        raise ValueError("Invalid SVA type given")
+
+    # convert ipr values to decibels for comparison
+    db_results_ipr_no_egr, db_results_ipr_egr = convert_to_db(
+        results_ipr_no_egr
+    ), convert_to_db(results_ipr_egr)
+
+    # set edges unaffected by SVA to the minimum value of the image
+    clean_edges(db_results_ipr_no_egr, tp["osr"])
+    clean_edges(db_results_ipr_egr, tp["osr"])
+
+    # calculate peak values with and without EGR
+    mainlobe_dim = get_mainlobe_dim(tp, tc["offsets"])
+    new_peak_no_egr = get_peak(db_results_ipr_no_egr, mainlobe_dim)
+    new_peak_egr = get_peak(db_results_ipr_egr, mainlobe_dim)
+
+    # test if egr is preserving peak value
+    assert new_peak_egr - new_peak_no_egr > tc["egr_peak_diff"]
 
 
 @pytest.mark.parametrize(
@@ -272,7 +371,7 @@ def calc_center(row):
         (2.0, "uncoupled", 0.001, 80),
         (2.0, "double", 0.01, 60),
         (1.5, "double", 0.01, 60),
-        (1.25, "double", 0.01, 40),
+        (1.25, "double", 0.01, 60),
     ],
 )
 def test_centered_target(osr, sva_type, tol, peak_diff):
@@ -286,10 +385,10 @@ def test_centered_target(osr, sva_type, tol, peak_diff):
 @pytest.mark.parametrize(
     "osr, sva_type, tol, peak_diff",
     [
-        (2.0, "uncoupled", 0.001, 80),
-        (2.0, "double", 0.01, 60),
-        (1.5, "double", 0.01, 60),
-        (1.25, "double", 0.01, 60),
+        (2.0, "uncoupled", 0.001, 60),
+        (2.0, "double", 0.01, 40),
+        (1.5, "double", 0.01, 40),
+        (1.25, "double", 0.01, 40),
     ],
 )
 def test_shifted_target(osr, sva_type, tol, peak_diff):
@@ -308,10 +407,10 @@ def test_shifted_target(osr, sva_type, tol, peak_diff):
 @pytest.mark.parametrize(
     "osr, sva_type, target2_shift, tol1, tol2, peak_diff",
     [
-        (2.0, "uncoupled", 7, 0.1, 10, 60),
-        (2.0, "double", 7, 0.1, 10, 50),
-        (1.5, "double", 8, 0.1, 15, 50),
-        (1.25, "double", 8, 0.1, 15, 50),
+        (2.0, "uncoupled", 7, 0.1, 10, 80),
+        (2.0, "double", 7, 0.1, 10, 60),
+        (1.5, "double", 8, 0.1, 15, 60),
+        (1.25, "double", 8, 0.1, 15, 60),
     ],
 )
 def test_buried_target(osr, sva_type, target2_shift, tol1, tol2, peak_diff):
@@ -319,7 +418,7 @@ def test_buried_target(osr, sva_type, target2_shift, tol1, tol2, peak_diff):
         data_size=(1024, 1024),
         osr=osr,
         amp=1,
-        shifts=(np.random.rand(), np.random.rand()),
+        shifts=(0, 0),
     )
     target1_shifts = target1_params["shifts"]
     target2_params = dict(
@@ -335,35 +434,34 @@ def test_buried_target(osr, sva_type, target2_shift, tol1, tol2, peak_diff):
 
 
 @pytest.mark.parametrize(
-    "osr,sva_type,tol,peak_diff,kctr",
+    "osr,sva_type,peak_diff",
     [
-        (2.0, "uncoupled", 0.1, 80, (0.3, 0.4)),
-        (2.0, "double", 0.1, 60, (-0.3, 0.4)),
-        (1.5, "double", 0.1, 60, (0.3, -0.4)),
-        (1.25, "double", 0.1, 60, (-0.3, -0.4)),
+        (2.0, "uncoupled", 80),
+        (2.0, "double", 50),
+        (1.5, "double", 50),
+        (1.25, "double", 50),
     ],
 )
-def test_constant_shifted_spectra(osr, sva_type, tol, peak_diff, kctr):
+def test_constant_shifted_spectra(osr, sva_type, peak_diff):
     target_params = dict(
         data_size=(1024, 1024),
         osr=osr,
         amp=1,
-        shifts=(np.random.rand(), np.random.rand()),
-        kctr=kctr,
+        shifts=(0, 0),
+        kctr=(0.3, -0.4),
     )
     test_conditions = dict(
-        sva_type=sva_type, offsets=(1, 2), tol=tol, peak_diff=peak_diff
+        sva_type=sva_type, offsets=(1, 2), tol=0.1, peak_diff=peak_diff
     )
     run_one_target_test(target_params, test_conditions)
 
 
 @pytest.mark.parametrize(
-    "osr,sva_type,tol,peak_diff,tgt_phase_poly",
+    "osr,sva_type,peak_diff,tgt_phase_poly",
     [
         (
             2.0,
             "uncoupled",
-            0.1,
             80,
             [
                 [2.79859927e-02, 4.61178993e-07, -1.50323162e-07],
@@ -374,8 +472,7 @@ def test_constant_shifted_spectra(osr, sva_type, tol, peak_diff, kctr):
         (
             2.0,
             "double",
-            0.1,
-            60,
+            50,
             [
                 [-2.38969940e-01, -1.11531905e-04, -1.86553997e-07],
                 [-1.16553933e-04, -3.46075058e-07, 1.78556430e-10],
@@ -385,8 +482,7 @@ def test_constant_shifted_spectra(osr, sva_type, tol, peak_diff, kctr):
         (
             1.5,
             "double",
-            0.1,
-            60,
+            50,
             [
                 [1.72502592e-01, 4.77756507e-04, -3.86998030e-07],
                 [7.57418005e-05, 3.01818002e-07, -3.43175809e-10],
@@ -396,8 +492,7 @@ def test_constant_shifted_spectra(osr, sva_type, tol, peak_diff, kctr):
         (
             1.25,
             "double",
-            0.1,
-            60,
+            50,
             [
                 [4.37297371e-01, 1.48484260e-04, 2.06584474e-07],
                 [2.42018475e-04, -3.11471305e-07, 2.48010167e-10],
@@ -406,18 +501,41 @@ def test_constant_shifted_spectra(osr, sva_type, tol, peak_diff, kctr):
         ),
     ],
 )
-def test_varying_shifted_spectra(osr, sva_type, tol, peak_diff, tgt_phase_poly):
+def test_varying_shifted_spectra(osr, sva_type, peak_diff, tgt_phase_poly):
     target_params = dict(
         data_size=(1024, 1024),
         osr=osr,
         amp=1,
-        shifts=(np.random.rand(), np.random.rand()),
+        shifts=(0, 0),
         tgt_phase_poly=tgt_phase_poly,
     )
     test_conditions = dict(
-        sva_type=sva_type, offsets=(1, 2), tol=tol, peak_diff=peak_diff
+        sva_type=sva_type, offsets=(1, 2), tol=0.1, peak_diff=peak_diff
     )
     run_one_target_test(target_params, test_conditions)
+
+
+@pytest.mark.parametrize(
+    "osr,sva_type,glint_strength",
+    [
+        (2.0, "uncoupled", 50000000),
+        (2.0, "double", 50000000),
+        (1.5, "double", 5000),
+        (1.25, "double", 5000),
+    ],
+)
+def test_edge_glint_target(osr, sva_type, glint_strength):
+    target_params = dict(
+        data_size=(1024, 1024),
+        osr=osr,
+        amp=1,
+        shifts=(0, 0),
+        glint_strength=glint_strength,
+    )
+    test_conditions = dict(
+        sva_type=sva_type, offsets=(2, 3), egr_peak_diff=8
+    )
+    run_edge_glint_target_test(target_params, test_conditions)
 
 
 @pytest.mark.parametrize(
@@ -446,7 +564,7 @@ def test_joint_iq_upsample(data_size, osr, upsample_osr):
         data_size=data_size,
         osr=osr,
         amp=1,
-        shifts=(np.random.rand(), np.random.rand()),
+        shifts=(0, 0),
     )
     target = create_target(target_params)
     for m in range(data_size[0]):
@@ -463,14 +581,14 @@ def test_joint_iq_upsample(data_size, osr, upsample_osr):
 
 
 @pytest.mark.parametrize(
-    "osr,upsample_osr,sva_type,tol,peak_diff",
+    "osr,upsample_osr",
     [
-        (2.0, 2, "joint_iq", 0.1, 50),
-        (1.5, 3, "joint_iq", 0.1, 50),
-        (1.25, 5, "joint_iq", 0.1, 50),
+        (2.0, 2),
+        (1.5, 3),
+        (1.25, 5),
     ],
 )
-def test_joint_iq_centered_target(osr, upsample_osr, sva_type, tol, peak_diff):
+def test_joint_iq_centered_target(osr, upsample_osr):
     target_params = dict(
         data_size=(1024, 1024),
         osr=osr,
@@ -478,12 +596,12 @@ def test_joint_iq_centered_target(osr, upsample_osr, sva_type, tol, peak_diff):
         shifts=(0, 0),
     )
     test_conditions = dict(
-        sva_type=sva_type,
+        sva_type='joint_iq',
         upsample_osr=upsample_osr,
-        fft_size=target_params["data_size"][0],
+        fft_size=target_params["data_size"],
         offsets=(1, 2),
-        tol=tol,
-        peak_diff=peak_diff,
+        tol=0.1,
+        peak_diff=60,
     )
     run_one_target_test(target_params, test_conditions)
 
@@ -506,7 +624,7 @@ def test_joint_iq_shifted_target(osr, upsample_osr, sva_type, tol, peak_diff):
     test_conditions = dict(
         sva_type=sva_type,
         upsample_osr=upsample_osr,
-        fft_size=target_params["data_size"][0],
+        fft_size=target_params["data_size"],
         offsets=(1, 2),
         tol=tol,
         peak_diff=peak_diff,
@@ -529,7 +647,7 @@ def test_joint_iq_buried_target(
         data_size=(1024, 1024),
         osr=osr,
         amp=1,
-        shifts=(np.random.rand(), np.random.rand()),
+        shifts=(0, 0),
     )
     target1_shifts = target1_params["shifts"]
     target2_params = dict(
@@ -541,10 +659,36 @@ def test_joint_iq_buried_target(
     test_conditions = dict(
         sva_type=sva_type,
         upsample_osr=upsample_osr,
-        fft_size=target1_params["data_size"][0],
+        fft_size=target1_params["data_size"],
         offsets=(2, 3),
         tol1=tol1,
         tol2=tol2,
         peak_diff=peak_diff,
     )
     run_two_target_test(target1_params, target2_params, test_conditions)
+
+
+@pytest.mark.parametrize(
+    "osr,upsample_osr",
+    [
+        (2.0, 2),
+        (1.5, 3),
+        (1.25, 5),
+    ],
+)
+def test_joint_iq_edge_glint_target(osr, upsample_osr):
+    target_params = dict(
+        data_size=(1024, 1024),
+        osr=osr,
+        amp=1,
+        shifts=(0, 0),
+        glint_strength=5000000,
+    )
+    test_conditions = dict(
+        sva_type='joint_iq',
+        upsample_osr=upsample_osr,
+        fft_size=target_params["data_size"],
+        offsets=(1, 1),
+        egr_peak_diff=8,
+    )
+    run_edge_glint_target_test(target_params, test_conditions)

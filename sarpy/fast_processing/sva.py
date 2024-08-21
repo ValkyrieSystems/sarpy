@@ -39,15 +39,20 @@ def compute_min_abs(c1, c2):
 
 
 @numba.njit
-def compute_e(data, m, n, osr):
+def compute_e(data, m, n, pos_col_phasor, neg_col_phasor, osr):
     """Compute value of E to test for edge-glint retention"""
-    v1 = data[m, n - osr // 2] - data[m, n + osr // 2]
-    v2 = data[m, n] - data[m, n - osr] - data[m, n + osr]
+    v1 = data[m, n - osr // 2] * neg_col_phasor - data[m, n + osr // 2] * pos_col_phasor
+    v2 = (
+        data[m, n]
+        - data[m, n - osr] * neg_col_phasor
+        - data[m, n + osr] * pos_col_phasor
+    )
+
+    E_denom = v1.real**2 + v1.imag**2
 
     # prevent divide by zero
-    E_denom = v1.real**2 + v1.imag**2
     if E_denom == 0:
-        E_denom = np.finfo(data.real.dtype).tiny
+        return np.inf
 
     E = 2 * abs(v1.real * v2.real + v1.imag * v2.imag) / (3 * E_denom)
 
@@ -153,7 +158,7 @@ def uncoup_sva(
             # apply edge-glint retention
             wn_max = 0.5
             if edge_glint_threshold > 0:
-                E = compute_e(data, m, n, 2)
+                E = compute_e(data, m, n, pos_col_phasor, neg_col_phasor, 2)
                 # test whether to apply EGR
                 if E <= edge_glint_threshold:
                     wn_max = edge_glint_max_weight
@@ -177,6 +182,7 @@ def uncoup_sva(
             imag_conv = min_uncoup_conv(imag_compon, qm, qn, p, wn_max)
 
             sva_data[m, n] = complex(real_conv, imag_conv)
+
     return sva_data
 
 
@@ -203,6 +209,7 @@ def compute_w1(round_osr, ce_osr, ws):
             w1 = 1 / (2 * calc)
         else:
             w1 = 1 / (2 * (np.sinc(round_osr * ws) - np.cos(np.pi * round_osr * ws)))
+
     return w1
 
 
@@ -214,58 +221,31 @@ def compute_a(osr, ws, w1):
 
 
 @numba.njit
-def min_d_sva_conv(compon, q, w1, a):
-    """Compute the minimum convolution for D-SVA"""
+def min_d_sva_conv_one_dim(compon, q, w1, a):
+    """Compute the minimum real or imaginary convolution for D-SVA in one dimension"""
     conv = a * compon + w1 * q
+
     # if signs are different, set pixel value to 0
     if check_diff_signs(compon, conv):
         min_conv = 0
     # otherwise, set pixel value to the minimum magnitude
     else:
         min_conv = compute_min_abs(compon, conv)
+
     return min_conv
 
 
 @numba.njit
-def d_sva_helper(
-    data,
-    w1_row,
-    w1_col,
-    row_osr,
-    col_osr,
-    m,
-    n,
-    a_fl,
-    a_col,
-    pos_row_phasor,
-    neg_row_phasor,
-    pos_col_phasor,
-    neg_col_phasor,
-):
-    """Compute the minimum convolution for D-SVA using both floor and ceiling oversample ratios"""
-    tc = data[m - row_osr, n] * neg_row_phasor
-    bc = data[m + row_osr, n] * pos_row_phasor
-    ml = data[m, n - col_osr] * neg_col_phasor
-    mr = data[m, n + col_osr] * pos_col_phasor
+def min_d_sva_conv(compon, qm, qn, w1_row, w1_col, a_row, a_col):
+    """Compute the minimum real and imaginary convolution for D-SVA in two dimensions"""
+    real_conv_m = min_d_sva_conv_one_dim(compon.real, qm.real, w1_row, a_row)
+    real_conv_n = min_d_sva_conv_one_dim(compon.real, qn.real, w1_col, a_col)
 
-    # real component values
-    real_compon = data[m, n].real
-    qm = tc.real + bc.real
-    qn = ml.real + mr.real
-    real_conv_m = min_d_sva_conv(real_compon, qm, w1_row, a_fl)
-    real_conv_n = min_d_sva_conv(real_compon, qn, w1_col, a_col)
+    imag_conv_m = min_d_sva_conv_one_dim(compon.imag, qm.imag, w1_row, a_row)
+    imag_conv_n = min_d_sva_conv_one_dim(compon.imag, qn.imag, w1_col, a_col)
 
-    # compare real convolution computed along the m and n axes, choose the minimum magnitude
+    # compute minimum convolution between two dimensions
     real_conv = compute_min_abs(real_conv_m, real_conv_n)
-
-    # imaginary component values
-    imag_compon = data[m, n].imag
-    qm = tc.imag + bc.imag
-    qn = ml.imag + mr.imag
-    imag_conv_m = min_d_sva_conv(imag_compon, qm, w1_row, a_fl)
-    imag_conv_n = min_d_sva_conv(imag_compon, qn, w1_col, a_col)
-
-    # compare imaginary convolution computed along the m and n axes, choose the minimum magnitude
     imag_conv = compute_min_abs(imag_conv_m, imag_conv_n)
 
     return real_conv, imag_conv
@@ -306,14 +286,14 @@ def d_sva(
     ws_col = 1 / col_osr
 
     w1_fl_row = compute_w1(fl_row_osr, ce_row_osr, ws_row)
-    w1_fl_col_no_egr = compute_w1(fl_col_osr, ce_col_osr, ws_col)
+    w1_fl_col = compute_w1(fl_col_osr, ce_col_osr, ws_col)
     w1_ce_row = compute_w1(ce_row_osr, ce_row_osr, ws_row)
-    w1_ce_col_no_egr = compute_w1(ce_col_osr, ce_col_osr, ws_col)
+    w1_ce_col = compute_w1(ce_col_osr, ce_col_osr, ws_col)
 
     a_fl_row = compute_a(fl_row_osr, ws_row, w1_fl_row)
-    a_fl_col = compute_a(fl_col_osr, ws_col, w1_fl_col_no_egr)
+    a_fl_col = compute_a(fl_col_osr, ws_col, w1_fl_col)
     a_ce_row = compute_a(ce_row_osr, ws_row, w1_ce_row)
-    a_ce_col = compute_a(ce_col_osr, ws_col, w1_ce_col_no_egr)
+    a_ce_col = compute_a(ce_col_osr, ws_col, w1_ce_col)
 
     # create new data array and copy boundary values
     sva_data = np.zeros_like(data)
@@ -353,8 +333,18 @@ def d_sva(
             fl_pos_col_phasor = np.exp(1j * fl_col_kctr)
             fl_neg_col_phasor = np.conjugate(fl_pos_col_phasor)
 
+            # compute nearby pixel values and apply phasors using floor osr
+            qm_fl = (
+                data[m - fl_row_osr, n] * fl_neg_row_phasor
+                + data[m + fl_row_osr, n] * fl_pos_row_phasor
+            )
+            qn_fl = (
+                data[m, n - fl_col_osr] * fl_neg_col_phasor
+                + data[m, n + fl_col_osr] * fl_pos_col_phasor
+            )
+
             if not has_int_osr:
-                # use ceiling osr to create phasors
+                # use ceiling osr
                 ce_row_kctr = ce_row_osr * row_kctr
                 ce_col_kctr = ce_col_osr * col_kctr
 
@@ -364,85 +354,95 @@ def d_sva(
                 ce_pos_col_phasor = np.exp(1j * ce_col_kctr)
                 ce_neg_col_phasor = np.conjugate(ce_pos_col_phasor)
 
-            # preserve original values
-            w1_fl_col = w1_fl_col_no_egr
-            w1_ce_col = w1_ce_col_no_egr
+                qm_ce = (
+                    data[m - ce_row_osr, n] * ce_neg_row_phasor
+                    + data[m + ce_row_osr, n] * ce_pos_row_phasor
+                )
+                qn_ce = (
+                    data[m, n - ce_col_osr] * ce_neg_col_phasor
+                    + data[m, n + ce_col_osr] * ce_pos_col_phasor
+                )
+
+            # compute real and imaginary convolutions using floor osr
+            compon = data[m, n]
+            fl_min_conv = min_d_sva_conv(
+                compon, qm_fl, qn_fl, w1_fl_row, w1_fl_col, a_fl_row, a_fl_col
+            )
+
+            real_conv = fl_min_conv[0]
+            imag_conv = fl_min_conv[1]
+
+            if not has_int_osr:
+                # if osr is not integer, compute using ceiling osr
+                ce_min_conv = min_d_sva_conv(
+                    compon, qm_ce, qn_ce, w1_ce_row, w1_ce_col, a_ce_row, a_ce_col
+                )
+
+                real_conv = compute_min_abs(real_conv, ce_min_conv[0])
+                imag_conv = compute_min_abs(imag_conv, ce_min_conv[1])
 
             # apply edge-glint retention
-            if edge_glint_threshold > 0:
-                if (w1_fl_col > edge_glint_max_weight) and (fl_col_osr >= 2):
+            if edge_glint_threshold > 0 and ce_col_osr >= 2:
+                # compute E using ceiling osr
+                E_ce = compute_e(
+                    data, m, n, ce_pos_col_phasor, ce_neg_col_phasor, ce_col_osr
+                )
+
+                E_fl = np.inf
+                if E_ce > edge_glint_threshold and fl_col_osr >= 2:
                     # compute E using floor osr
-                    E_fl = compute_e(data, m, n, fl_col_osr)
+                    E_fl = compute_e(
+                        data, m, n, fl_pos_col_phasor, fl_neg_col_phasor, fl_col_osr
+                    )
 
-                    # apply EGR using the floor osr
-                    if E_fl < edge_glint_threshold:
-                        w1_fl_col = edge_glint_max_weight
+                if E_ce <= edge_glint_threshold or E_fl <= edge_glint_threshold:
+                    # calculate convolution using egr max weight
+                    egr_fl_min_conv = min_d_sva_conv(
+                        compon,
+                        qm_fl,
+                        qn_fl,
+                        w1_fl_row,
+                        edge_glint_max_weight,
+                        a_fl_row,
+                        a_fl_col,
+                    )
 
-                if (w1_ce_col > edge_glint_max_weight) and (ce_col_osr >= 2):
-                    # compute E using ceiling osr
-                    E_ce = compute_e(data, m, n, ce_col_osr)
+                    # replace original convolution with egr convolution if egr convolution is greater than original
+                    if real_conv == fl_min_conv[0] and abs(real_conv) < abs(
+                        egr_fl_min_conv[0]
+                    ):
+                        real_conv = egr_fl_min_conv[0]
 
-                    # apply EGR using ceiling osr
-                    if E_ce <= edge_glint_threshold:
-                        w1_ce_col = edge_glint_max_weight
+                    if imag_conv == fl_min_conv[1] and abs(imag_conv) < abs(
+                        egr_fl_min_conv[1]
+                    ):
+                        imag_conv = egr_fl_min_conv[1]
 
-            # if osr is integer in both dimensions, compute convolution using only one integer osr in each dimension
-            if has_int_osr:
-                fl_out = d_sva_helper(
-                    data,
-                    w1_fl_row,
-                    w1_fl_col,
-                    fl_row_osr,
-                    fl_col_osr,
-                    m,
-                    n,
-                    a_fl_row,
-                    a_fl_col,
-                    fl_pos_row_phasor,
-                    fl_neg_row_phasor,
-                    fl_pos_col_phasor,
-                    fl_neg_col_phasor,
-                )
+                    if not has_int_osr:
+                        # use ceiling osr
+                        egr_ce_min_conv = min_d_sva_conv(
+                            compon,
+                            qm_ce,
+                            qn_ce,
+                            w1_ce_row,
+                            edge_glint_max_weight,
+                            a_ce_row,
+                            a_ce_col,
+                        )
 
-                real_conv = fl_out[0]
-                imag_conv = fl_out[1]
-            # otherwise, compute using both floor and ceiling osrs in each dimension
-            else:
-                fl_out = d_sva_helper(
-                    data,
-                    w1_fl_row,
-                    w1_fl_col,
-                    fl_row_osr,
-                    fl_col_osr,
-                    m,
-                    n,
-                    a_fl_row,
-                    a_fl_col,
-                    fl_pos_row_phasor,
-                    fl_neg_row_phasor,
-                    fl_pos_col_phasor,
-                    fl_neg_col_phasor,
-                )
-                ce_out = d_sva_helper(
-                    data,
-                    w1_ce_row,
-                    w1_ce_col,
-                    ce_row_osr,
-                    ce_col_osr,
-                    m,
-                    n,
-                    a_ce_row,
-                    a_ce_col,
-                    ce_pos_row_phasor,
-                    ce_neg_row_phasor,
-                    ce_pos_col_phasor,
-                    ce_neg_col_phasor,
-                )
-                # choose the pixel values with the minimum magnitude
-                real_conv = compute_min_abs(fl_out[0], ce_out[0])
-                imag_conv = compute_min_abs(fl_out[1], ce_out[1])
+                        if real_conv == ce_min_conv[0] and abs(real_conv) < abs(
+                            egr_ce_min_conv[0]
+                        ):
+                            real_conv = egr_ce_min_conv[0]
 
+                        if imag_conv == ce_min_conv[1] and abs(imag_conv) < abs(
+                            egr_ce_min_conv[1]
+                        ):
+                            imag_conv = egr_ce_min_conv[1]
+
+            # set the pixel to the minimum real and imaginary components
             sva_data[m, n] = complex(real_conv, imag_conv)
+
     return sva_data
 
 

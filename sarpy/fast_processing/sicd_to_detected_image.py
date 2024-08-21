@@ -178,11 +178,16 @@ def main(args=None):
     parser.add_argument('input_sicd', type=pathlib.Path, help="Path to input SICD")
     parser.add_argument('output_sidd', type=pathlib.Path, help="Path to write SIDD NITF")
     parser.add_argument('--sidelobe-control', choices=['Skip', 'Uniform', 'Taylor', 'SVA', 'DSVA', 'JIQ'],
-                        default='Skip', help="Desired sidelobe control.  'Skip' retains weighting of input SICD.")
+                        default='Skip', help="Desired sidelobe control. Default: %(default)s,"
+                        " which retains weighting of input SICD.")
+    parser.add_argument('--egr-threshold', default=0.2, type=float,
+                        help="Threshold for applying EGR. Default: %(default)s, 0 turns EGR off.")
+    parser.add_argument('--egr-max-weight', default=0.45, type=float,
+                        help="Max weight used by EGR. Default: %(default)s, set lower to increase correction.")
     parser.add_argument('--sidd-version', default=3, type=int, choices=[1, 2, 3],
-                        help="The version of the SIDD standard used.")
+                        help="The version of the SIDD standard used.  Default: %(default)s")
     parser.add_argument('--fft-backend', choices=['auto', 'mkl', 'scipy'], default='auto',
-                        help="Which FFT backend to use.  Default 'auto', which will use mkl if available")
+                        help="Which FFT backend to use. Default: %(default)s, which will use mkl if available")
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help="Enable verbose logging (may be repeated)")
     config = parser.parse_args(args)
@@ -216,7 +221,9 @@ def main(args=None):
                             row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
                             sicd_pixels = sva.uncoup_sva(sicd_pixels,
                                                          row_kctr_poly_rad,
-                                                         col_kctr_poly_rad)
+                                                         col_kctr_poly_rad,
+                                                         edge_glint_threshold=config.egr_threshold,
+                                                         edge_glint_max_weight=config.egr_max_weight)
                         elif config.sidelobe_control.upper() == 'DSVA':
                             row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
                             col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
@@ -225,10 +232,14 @@ def main(args=None):
                                                     row_nyq_rate,
                                                     col_nyq_rate,
                                                     row_kctr_poly_rad,
-                                                    col_kctr_poly_rad)
+                                                    col_kctr_poly_rad,
+                                                    edge_glint_threshold=config.egr_threshold,
+                                                    edge_glint_max_weight=config.egr_max_weight)
                         elif config.sidelobe_control.upper() == 'JIQ':
                             sicd_pixels, sicd_metadata = sva.jiq_sicd(sicd_pixels,
-                                                                      sicd_metadata)
+                                                                      sicd_metadata,
+                                                                      edge_glint_threshold=config.egr_threshold,
+                                                                      edge_glint_max_weight=config.egr_max_weight)
                     else:
                         window_name = config.sidelobe_control.upper()
                         taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)

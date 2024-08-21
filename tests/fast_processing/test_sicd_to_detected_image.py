@@ -73,3 +73,9 @@ def test_sva_smoke(sicd_file, tmp_path, sva_method):
     sidd_filename = tmp_path / 'smoke.sidd'
     stdi.main([str(sicd_file), str(sidd_filename), '--sidelobe-control', sva_method])
     assert sidd_filename.exists()
+
+
+def test_sva_egr_smoke(sicd_file, tmp_path):
+    sidd_filename = tmp_path / 'smoke.sidd'
+    stdi.main([str(sicd_file), str(sidd_filename), '--sidelobe-control', 'SVA', '--egr-threshold', '0.1', '--egr-max-weight', '0.4'])
+    assert sidd_filename.exists()

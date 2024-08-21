@@ -22,6 +22,7 @@ from sarpy.fast_processing import sidelobe_control
 from sarpy.fast_processing import sva
 from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import remap
+from sarpy.fast_processing import write_sidd
 
 
 def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3):
@@ -248,9 +249,7 @@ def main(args=None):
                                                   sidd_version=config.sidd_version)
 
             with benchmark.howlong('write'):
-                with sarpy.io.product.sidd.SIDDWriter(str(config.output_sidd), sidd_meta,
-                                                      check_existence=False) as writer:
-                    writer.write_chip(sidd_pixels)
+                write_sidd.write_to_file(str(config.output_sidd), sidd_pixels, sidd_meta)
 
 
 def _projection_info(reader, sicd_meta):

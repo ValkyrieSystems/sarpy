@@ -9,8 +9,9 @@ import numpy as np
 import scipy.fft
 import scipy.interpolate as spi
 
-from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import deskew
+from sarpy.fast_processing import read_sicd
+from sarpy.fast_processing import write_sicd
 from sarpy.io.complex.sicd_elements.Grid import WgtTypeType
 from sarpy.processing.sicd.spectral_taper import Taper
 import sarpy.processing.sicd.windows as windows  # TODO migrate to sarpy2
@@ -246,8 +247,7 @@ def main(args=None):
                                                 new_window, window_name, new_params)
 
             with benchmark.howlong('write'):
-                with sarpy.io.complex.sicd.SICDWriter(str(config.output_sicd), new_meta) as writer:
-                    writer.write_chip(new_pixels)
+                write_sicd.write_to_file(config.output_sicd, new_pixels, new_meta)
 
 
 if __name__ == '__main__':

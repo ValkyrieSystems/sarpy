@@ -12,6 +12,7 @@ import sarpy.fast_processing.backend
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import deskew
 from sarpy.fast_processing import read_sicd
+from sarpy.fast_processing import write_sicd
 
 
 def sicd_to_sicd(data, sicd_metadata, desired_osr):
@@ -213,8 +214,7 @@ def main(args=None):
             new_pixels, new_meta = sicd_to_sicd(sicd_pixels, sicd_meta, config.desired_osr)
 
             with benchmark.howlong('write'):
-                with sarpy.io.complex.sicd.SICDWriter(str(config.output_sicd), new_meta) as writer:
-                    writer.write_chip(new_pixels)
+                write_sicd.write_to_file(config.output_sicd, new_pixels, new_meta)
 
 
 if __name__ == '__main__':

@@ -30,7 +30,7 @@ def read_from_file(filename, blocksize=DEFAULT_BLOCK_SIZE):
         # Retrieving blocks from the reader is much more memory efficient for large SICDs
         # The reader will allocate working space to hold the entire requested data
         sicd_pixels = np.empty(reader.data_size, dtype="complex64")
-        num_splits = int(np.ceil(sicd_pixels.nbytes / blocksize))
+        num_splits = min(int(np.ceil(sicd_pixels.nbytes / blocksize)), sicd_pixels.shape[0])
         first_row = 0
         for split in np.array_split(sicd_pixels, num_splits, axis=0):
             split[...] = reader[first_row:first_row + split.shape[0], :]

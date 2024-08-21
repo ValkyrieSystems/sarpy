@@ -1,3 +1,6 @@
+## [1.3.59rc.dev8]
+- Improved memory usage when writing SICD and SIDD
+
 ## [1.3.59rc.dev7]
 - Synced with integration/1.3.59-rc branch as of 2024-08-15
 

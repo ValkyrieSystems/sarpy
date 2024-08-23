@@ -47,7 +47,8 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
 
     # amplitude
     with benchmark.howlong('amplitude'):
-        data = _amplitude(data)
+        amp_data = _amplitude(data)
+        data = None
 
     # project
     with benchmark.howlong('projection'):
@@ -56,16 +57,18 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
         # TODO adjust output plane based on chipped extent
         # TODO compute SIDD metadata from SICD metadata
         # TODO create callables for SICD <--> SIDD coordinates
-        data = projection.project(data, sicd_metadata, proj_helper, ortho_bounds)
+        proj_data = projection.project(amp_data, sicd_metadata, proj_helper, ortho_bounds)
+        amp_data = None
 
     with benchmark.howlong('remap'):
-        _clip_zero_inplace(data)  # projection interpolation could result in small negative values
+        _clip_zero_inplace(proj_data)  # projection interpolation could result in small negative values
         gdm_params = remap.gdm_parameters(sicd_metadata)
-        data = remap.gdm(data, **gdm_params)
+        remap_data = remap.gdm(proj_data, **gdm_params)
+        proj_data = None
 
     sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds, sidd_version)
 
-    return data, sidd_metadata
+    return remap_data, sidd_metadata
 
 
 def _create_sidd_metadata(proj, bounds, sidd_version):
@@ -209,17 +212,19 @@ def main(args=None):
                         taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
                         new_window = taper.get_vals(65, sym=True)
                         new_params = taper.window_pars
-                        sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
-                                                                                   sicd_metadata,
-                                                                                   new_window,
-                                                                                   window_name,
-                                                                                   new_params)
+                        unweighted_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                                                                                         sicd_metadata,
+                                                                                         new_window,
+                                                                                         window_name,
+                                                                                         new_params)
+                        sicd_pixels = None
+
                         if config.sidelobe_control.upper() == 'SVA':
-                            sicd_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(sicd_pixels,
+                            sicd_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(unweighted_pixels,
                                                                                       sicd_metadata,
                                                                                       2.0)
                             row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
-                            sicd_pixels = sva.uncoup_sva(sicd_pixels,
+                            proj_pixels = sva.uncoup_sva(unweighted_pixels,
                                                          row_kctr_poly_rad,
                                                          col_kctr_poly_rad,
                                                          edge_glint_threshold=config.egr_threshold,
@@ -228,7 +233,7 @@ def main(args=None):
                             row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
                             col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
                             row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
-                            sicd_pixels = sva.d_sva(sicd_pixels,
+                            proj_pixels = sva.d_sva(unweighted_pixels,
                                                     row_nyq_rate,
                                                     col_nyq_rate,
                                                     row_kctr_poly_rad,
@@ -236,28 +241,34 @@ def main(args=None):
                                                     edge_glint_threshold=config.egr_threshold,
                                                     edge_glint_max_weight=config.egr_max_weight)
                         elif config.sidelobe_control.upper() == 'JIQ':
-                            sicd_pixels, sicd_metadata = sva.jiq_sicd(sicd_pixels,
+                            proj_pixels, sicd_metadata = sva.jiq_sicd(unweighted_pixels,
                                                                       sicd_metadata,
                                                                       edge_glint_threshold=config.egr_threshold,
                                                                       edge_glint_max_weight=config.egr_max_weight)
+                        unweighted_pixels = None
                     else:
                         window_name = config.sidelobe_control.upper()
                         taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
                         new_window = taper.get_vals(65, sym=True)
                         new_params = taper.window_pars
-                        sicd_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                        proj_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
                                                                                    sicd_metadata,
                                                                                    new_window,
                                                                                    window_name,
                                                                                    new_params)
+                        sicd_pixels = None
+            else:
+                proj_pixels = sicd_pixels
+                sicd_pixels = None
 
             with sarpy.io.complex.open(str(config.input_sicd)) as reader:
                 # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
                 proj_helper, ortho_bounds = _projection_info(reader, sicd_metadata)
 
-            sidd_pixels, sidd_meta = sicd_to_sidd(sicd_pixels, sicd_metadata,
+            sidd_pixels, sidd_meta = sicd_to_sidd(proj_pixels, sicd_metadata,
                                                   proj_helper=proj_helper, ortho_bounds=ortho_bounds,
                                                   sidd_version=config.sidd_version)
+            proj_pixels = None
 
             with benchmark.howlong('write'):
                 write_sidd.write_to_file(str(config.output_sidd), sidd_pixels, sidd_meta)

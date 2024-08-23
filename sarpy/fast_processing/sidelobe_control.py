@@ -47,63 +47,60 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
     """
     # TODO make sure Chips are supported
     new_weights = np.asarray(new_weights)
-    for axis in ('Row', 'Col'):
+    nrows, ncols = data.shape
+    for axis_index, axis in enumerate(('Row', 'Col')):
         # deskew
         with benchmark.howlong("deskew"):
-            data, sicd_metadata = deskew.sicd_to_sicd(data, sicd_metadata, axis)
+            deskew_data, sicd_metadata = deskew.sicd_to_sicd(data, sicd_metadata, axis)
+            data = None
 
         existing_window = _get_sicd_wgt_funct(sicd_metadata, axis, len(new_weights))
         both_windows = new_weights / np.maximum(existing_window, 0.01 * np.max(existing_window))
 
         # FFT # Mult # IFFT
         with benchmark.howlong("fft_window_ifft"):
-            data = _fft_window_ifft(data, sicd_metadata, axis, both_windows)
+            axis_mdata = {'Row': sicd_metadata.Grid.Row, 'Col': sicd_metadata.Grid.Col}[axis]
+            nyquist_bw = 1.0 / axis_mdata.SS
+            ipr_bw = axis_mdata.ImpRespBW
+            osf = nyquist_bw / ipr_bw
+
+            # Zero pad the image data to avoid IPR wrap-around, then
+            # find a good FFT size which creates some additional zero pad.
+            axis_size = deskew_data.shape[axis_index]
+            wrap_around_pad = int(min(200 * osf, 0.1 * axis_size))
+            good_fft_size = scipy.fft.next_fast_len(axis_size + wrap_around_pad)
+
+            with benchmark.howlong("fft"):
+                # Forward transform without FFTSHIFT so the DC bin is at index=0
+                if axis_mdata.Sgn == -1:
+                    fft_data = scipy.fft.fft(deskew_data, n=good_fft_size, axis=axis_index, workers=-1)
+                else:
+                    fft_data = scipy.fft.ifft(deskew_data, n=good_fft_size, axis=axis_index, workers=-1)
+                deskew_data = None
+
+            with benchmark.howlong("taper"):
+                # Interpolate the taper to cover the spectral support bandwidth and extend the
+                # taper window's end points into the over sample region of the spectrum.
+                func = spi.interp1d(np.linspace(-ipr_bw / 2, ipr_bw / 2, len(both_windows)), both_windows, kind='cubic',
+                                    bounds_error=False, fill_value=(both_windows[0], both_windows[-1]))
+                padded_taper = func(scipy.fft.fftfreq(good_fft_size, axis_mdata.SS))
+
+                # Apply the taper to the spectrum.
+                taper_2d = (padded_taper[:, np.newaxis] if axis == 'Row' else padded_taper[np.newaxis, :]).astype(fft_data.dtype)
+            with benchmark.howlong("multiply"):
+                weighted_data = fft_data * taper_2d
+                fft_data = None
+
+            with benchmark.howlong("ifft"):
+                # Inverse transform without FFTSHIFT and trim back to the original image size.
+                if axis_mdata.Sgn == -1:
+                    data = scipy.fft.ifft(weighted_data, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
+                else:
+                    data = scipy.fft.fft(weighted_data, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
+                weighted_data = None
 
     new_sicd_metadata = updated_sicd_metadata(sicd_metadata, new_weights, window_name, window_parameters)
     return data, new_sicd_metadata
-
-
-def _fft_window_ifft(cdata, mdata, axis, window_vals):
-    axis_index = {'Row': 0, 'Col': 1}[axis]
-    axis_mdata = {'Row': mdata.Grid.Row, 'Col': mdata.Grid.Col}[axis]
-    nyquist_bw = 1.0 / axis_mdata.SS
-    ipr_bw = axis_mdata.ImpRespBW
-    osf = nyquist_bw / ipr_bw
-
-    # Zero pad the image data to avoid IPR wrap-around, then
-    # find a good FFT size which creates some additional zero pad.
-    axis_size = cdata.shape[axis_index]
-    wrap_around_pad = int(min(200 * osf, 0.1 * axis_size))
-    good_fft_size = scipy.fft.next_fast_len(axis_size + wrap_around_pad)
-
-    with benchmark.howlong("fft"):
-        # Forward transform without FFTSHIFT so the DC bin is at index=0
-        if axis_mdata.Sgn == -1:
-            cdata_fft = scipy.fft.fft(cdata, n=good_fft_size, axis=axis_index, workers=-1)
-        else:
-            cdata_fft = scipy.fft.ifft(cdata, n=good_fft_size, axis=axis_index, workers=-1)
-
-    with benchmark.howlong("taper"):
-        # Interpolate the taper to cover the spectral support bandwidth and extend the
-        # taper window's end points into the over sample region of the spectrum.
-        func = spi.interp1d(np.linspace(-ipr_bw / 2, ipr_bw / 2, len(window_vals)), window_vals, kind='cubic',
-                            bounds_error=False, fill_value=(window_vals[0], window_vals[-1]))
-        padded_taper = func(scipy.fft.fftfreq(good_fft_size, axis_mdata.SS))
-
-        # Apply the taper to the spectrum.
-        taper_2d = padded_taper[:, np.newaxis] if axis == 'Row' else padded_taper[np.newaxis, :]
-    with benchmark.howlong("multiply"):
-        cdata_fft *= taper_2d
-
-    with benchmark.howlong("ifft"):
-        # Inverse transform without FFTSHIFT and trim back to the original image size.
-        nrows, ncols = cdata.shape
-        if axis_mdata.Sgn == -1:
-            cdata = scipy.fft.ifft(cdata_fft, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
-        else:
-            cdata = scipy.fft.fft(cdata_fft, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
-
-    return cdata
 
 
 def updated_sicd_metadata(sicd_metadata, new_weights, window_name, window_parameters=None):
@@ -245,6 +242,7 @@ def main(args=None):
             new_params = taper.window_pars
             new_pixels, new_meta = sicd_to_sicd(sicd_pixels, sicd_meta,
                                                 new_window, window_name, new_params)
+            del sicd_pixels
 
             with benchmark.howlong('write'):
                 write_sicd.write_to_file(config.output_sicd, new_pixels, new_meta)

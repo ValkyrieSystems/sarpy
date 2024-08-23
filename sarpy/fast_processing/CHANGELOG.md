@@ -1,3 +1,6 @@
+## [1.3.59rc.dev10]
+- Reduce memory used in multiple fast_processing modules
+
 ## [1.3.59rc.dev9]
 - Added SVA EGR unit tests and made fixes to EGR algorithm
 

@@ -211,6 +211,8 @@ def gdm(data, *, weighting, graze_deg, slope_deg):
         else:
             data_median = _median(data)
     c_l, c_h = _gdm_cutoff_values(data_mean, data_median, weighting, np.deg2rad(graze_deg), np.deg2rad(slope_deg))
+    if c_l == 0:
+        c_l = np.finfo(data.real.dtype).tiny
     return amp_to_dens_uint8(data,
                              dmin=30,
                              mmult=c_h / c_l,

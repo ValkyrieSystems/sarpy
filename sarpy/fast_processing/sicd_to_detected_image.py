@@ -4,6 +4,7 @@ __classification__ = "UNCLASSIFIED"
 
 import logging
 import pathlib
+import tracemalloc
 
 import numba
 import numpy as np
@@ -172,7 +173,7 @@ def _kctr_polys_from_sicd_meta(sicd_metadata):
     return row_kctr_poly_rad, col_kctr_poly_rad
 
 def main(args=None):
-    """CLI utility for creating SIDD v3 NITFs from SICDs"""
+    """CLI utility for creating SIDD NITFs from SICDs"""
     import argparse
     import sarpy.io.complex
     import sarpy.io.product.sidd
@@ -193,12 +194,18 @@ def main(args=None):
                         help="Which FFT backend to use. Default: %(default)s, which will use mkl if available")
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help="Enable verbose logging (may be repeated)")
+    parser.add_argument('--log-memory-usage', action='store_true',
+                        help="Enable logging of memory usage (may significantly reduce performance)")
     config = parser.parse_args(args)
 
     loglevels = [logging.WARNING, logging.INFO, logging.DEBUG]
     loglevel = loglevels[min(config.verbose, len(loglevels)-1)]
     logging.basicConfig(level=loglevel)
     logging.info(f"Log level set to {logging.getLevelName(loglevel)}")
+
+    logging.info(f"Memory usage logging enabled: {config.log_memory_usage}")
+    if config.log_memory_usage:
+        tracemalloc.start()
 
     with sarpy.fast_processing.backend.set_fft_backend(config.fft_backend):
         with benchmark.howlong("SICDtoSIDD"):
@@ -212,51 +219,59 @@ def main(args=None):
                         taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
                         new_window = taper.get_vals(65, sym=True)
                         new_params = taper.window_pars
-                        unweighted_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
-                                                                                         sicd_metadata,
-                                                                                         new_window,
-                                                                                         window_name,
-                                                                                         new_params)
-                        sicd_pixels = None
+                        with benchmark.howlong('unweight'):
+                            unweighted_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                                                                                             sicd_metadata,
+                                                                                             new_window,
+                                                                                             window_name,
+                                                                                             new_params)
+                            sicd_pixels = None
 
                         if config.sidelobe_control.upper() == 'SVA':
-                            sicd_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(unweighted_pixels,
-                                                                                      sicd_metadata,
-                                                                                      2.0)
-                            row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
-                            proj_pixels = sva.uncoup_sva(unweighted_pixels,
-                                                         row_kctr_poly_rad,
-                                                         col_kctr_poly_rad,
-                                                         edge_glint_threshold=config.egr_threshold,
-                                                         edge_glint_max_weight=config.egr_max_weight)
+                            with benchmark.howlong('Adjust OSR'):
+                                sicd_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(unweighted_pixels,
+                                                                                        sicd_metadata,
+                                                                                        2.0)
+                                unweighted_pixels = None
+                                row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
+                                proj_pixels = sva.uncoup_sva(sicd_pixels,
+                                                             row_kctr_poly_rad,
+                                                             col_kctr_poly_rad,
+                                                             edge_glint_threshold=config.egr_threshold,
+                                                             edge_glint_max_weight=config.egr_max_weight)
+                                sicd_pixels = None
                         elif config.sidelobe_control.upper() == 'DSVA':
-                            row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
-                            col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
-                            row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
-                            proj_pixels = sva.d_sva(unweighted_pixels,
-                                                    row_nyq_rate,
-                                                    col_nyq_rate,
-                                                    row_kctr_poly_rad,
-                                                    col_kctr_poly_rad,
-                                                    edge_glint_threshold=config.egr_threshold,
-                                                    edge_glint_max_weight=config.egr_max_weight)
+                            with benchmark.howlong('DSVA'):
+                                row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
+                                col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
+                                row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
+                                proj_pixels = sva.d_sva(unweighted_pixels,
+                                                        row_nyq_rate,
+                                                        col_nyq_rate,
+                                                        row_kctr_poly_rad,
+                                                        col_kctr_poly_rad,
+                                                        edge_glint_threshold=config.egr_threshold,
+                                                        edge_glint_max_weight=config.egr_max_weight)
+                                unweighted_pixels = None
                         elif config.sidelobe_control.upper() == 'JIQ':
-                            proj_pixels, sicd_metadata = sva.jiq_sicd(unweighted_pixels,
-                                                                      sicd_metadata,
-                                                                      edge_glint_threshold=config.egr_threshold,
-                                                                      edge_glint_max_weight=config.egr_max_weight)
-                        unweighted_pixels = None
+                            with benchmark.howlong('JIQ'):
+                                proj_pixels, sicd_metadata = sva.jiq_sicd(unweighted_pixels,
+                                                                        sicd_metadata,
+                                                                        edge_glint_threshold=config.egr_threshold,
+                                                                        edge_glint_max_weight=config.egr_max_weight)
+                                unweighted_pixels = None
                     else:
-                        window_name = config.sidelobe_control.upper()
-                        taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
-                        new_window = taper.get_vals(65, sym=True)
-                        new_params = taper.window_pars
-                        proj_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
-                                                                                   sicd_metadata,
-                                                                                   new_window,
-                                                                                   window_name,
-                                                                                   new_params)
-                        sicd_pixels = None
+                        with benchmark.howlong('Weighting'):
+                            window_name = config.sidelobe_control.upper()
+                            taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
+                            new_window = taper.get_vals(65, sym=True)
+                            new_params = taper.window_pars
+                            proj_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                                                                                    sicd_metadata,
+                                                                                    new_window,
+                                                                                    window_name,
+                                                                                    new_params)
+                            sicd_pixels = None
             else:
                 proj_pixels = sicd_pixels
                 sicd_pixels = None

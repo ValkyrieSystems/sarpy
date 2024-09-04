@@ -1,3 +1,7 @@
+## [1.3.59rc.dev11]
+- Memory usage logging
+- Fix bug introduced into sicd_to_detected_image during memory use reduction work.
+
 ## [1.3.59rc.dev10]
 - Reduce memory used in multiple fast_processing modules
 

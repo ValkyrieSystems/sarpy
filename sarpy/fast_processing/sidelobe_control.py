@@ -49,13 +49,15 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
     new_weights = np.asarray(new_weights)
     nrows, ncols = data.shape
     for axis_index, axis in enumerate(('Row', 'Col')):
+        existing_window = _get_sicd_wgt_funct(sicd_metadata, axis, len(new_weights))
+        both_windows = new_weights / np.maximum(existing_window, 0.01 * np.max(existing_window))
+        if np.allclose(both_windows, 1):
+            continue
+
         # deskew
         with benchmark.howlong("deskew"):
             deskew_data, sicd_metadata = deskew.sicd_to_sicd(data, sicd_metadata, axis)
             data = None
-
-        existing_window = _get_sicd_wgt_funct(sicd_metadata, axis, len(new_weights))
-        both_windows = new_weights / np.maximum(existing_window, 0.01 * np.max(existing_window))
 
         # FFT # Mult # IFFT
         with benchmark.howlong("fft_window_ifft"):

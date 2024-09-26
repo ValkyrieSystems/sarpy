@@ -1,3 +1,6 @@
+## [1.3.59rc.dev13]
+- Synced with integration/1.3.59-rc branch as of 2024-09-26
+
 ## [1.3.59rc.dev12]
 - Synced with integration/1.3.59-rc branch as of 2024-09-04
 

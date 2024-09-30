@@ -116,7 +116,7 @@ def _create_sidd_metadata(proj, bounds, sidd_version):
     sidd_metadata = sarpy.processing.sidd.sidd_structure_creation.create_sidd_structure(
         ortho_helper,
         bounds,
-        'Detectected Image',
+        'Detected Image',
         'MONO8I',
         version=sidd_version)
     return sidd_metadata

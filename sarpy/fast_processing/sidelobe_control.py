@@ -9,15 +9,15 @@ import numpy as np
 import scipy.fft
 import scipy.interpolate as spi
 
-from sarpy.fast_processing import deskew
-from sarpy.fast_processing import read_sicd
-from sarpy.fast_processing import write_sicd
 from sarpy.io.complex.sicd_elements.Grid import WgtTypeType
 from sarpy.processing.sicd.spectral_taper import Taper
 import sarpy.processing.sicd.windows as windows  # TODO migrate to sarpy2
 
 import sarpy.fast_processing.backend
 from sarpy.fast_processing import benchmark
+from sarpy.fast_processing import deskew
+from sarpy.fast_processing import read_sicd
+from sarpy.fast_processing import write_sicd
 
 
 def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameters=None):
@@ -215,8 +215,6 @@ def main(args=None):
     """CLI for changing the sidelobe control of a SICD"""
     import argparse
     import pathlib
-    import sarpy.io.complex
-    import sarpy.io.complex.sicd
 
     parser = argparse.ArgumentParser()
     parser.add_argument('input_sicd', type=pathlib.Path)

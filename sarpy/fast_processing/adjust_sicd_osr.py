@@ -189,8 +189,6 @@ def main(args=None):
     """CLI for changing the sampling rate of a SICD"""
     import argparse
     import pathlib
-    import sarpy.io.complex
-    import sarpy.io.complex.sicd
 
     parser = argparse.ArgumentParser()
     parser.add_argument('input_sicd', type=pathlib.Path)

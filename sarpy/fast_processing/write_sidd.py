@@ -4,7 +4,7 @@ __classification__ = "UNCLASSIFIED"
 
 import numpy as np
 
-import sarpy.io.product
+import sarpy.io.product.sidd
 
 DEFAULT_BLOCK_SIZE = 128 << 20
 

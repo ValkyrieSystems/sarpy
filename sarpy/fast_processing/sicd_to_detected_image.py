@@ -16,6 +16,7 @@ import sarpy.processing.ortho_rectify
 import sarpy.processing.sicd.spectral_taper
 import sarpy.processing.sidd.sidd_structure_creation
 
+import sarpy.fast_processing.backend
 from sarpy.fast_processing import adjust_sicd_osr
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import projection
@@ -91,7 +92,7 @@ def _create_sidd_metadata(proj, bounds, sidd_version):
 
     """
 
-    # legacy create_sidd_structure requires and ortho_helper
+    # legacy create_sidd_structure requires an ortho_helper
     class DummyOrthoHelper:
         def __init__(self, proj_helper):
             self.proj_helper = proj_helper
@@ -176,7 +177,6 @@ def main(args=None):
     """CLI utility for creating SIDD NITFs from SICDs"""
     import argparse
     import sarpy.io.complex
-    import sarpy.io.product.sidd
 
     parser = argparse.ArgumentParser()
     parser.add_argument('input_sicd', type=pathlib.Path, help="Path to input SICD")

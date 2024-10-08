@@ -4,7 +4,7 @@ __classification__ = "UNCLASSIFIED"
 
 import numpy as np
 
-import sarpy.io.complex
+import sarpy.io.complex.sicd
 
 DEFAULT_BLOCK_SIZE = 128 << 20
 

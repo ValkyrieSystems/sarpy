@@ -14,6 +14,7 @@ from sarpy.processing.sicd.spectral_taper import Taper
 import sarpy.processing.sicd.windows as windows  # TODO migrate to sarpy2
 
 import sarpy.fast_processing.backend
+import sarpy.fast_processing.metadata
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import deskew
 from sarpy.fast_processing import read_sicd
@@ -243,6 +244,15 @@ def main(args=None):
             new_pixels, new_meta = sicd_to_sicd(sicd_pixels, sicd_meta,
                                                 new_window, window_name, new_params)
             del sicd_pixels
+
+            sarpy.fast_processing.metadata.add_sicd_processing(
+                new_meta,
+                __name__,
+                parameters={
+                    "sidelobe_control": config.sidelobe_control,
+                    "fft_backend": config.fft_backend,
+                },
+            )
 
             with benchmark.howlong('write'):
                 write_sicd.write_to_file(config.output_sicd, new_pixels, new_meta)

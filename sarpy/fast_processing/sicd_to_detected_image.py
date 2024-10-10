@@ -12,11 +12,13 @@ import numpy.polynomial.polynomial as npp
 
 # TODO Refactor from sarpy2
 import sarpy.geometry.point_projection
+import sarpy.io.product.sidd2_elements.ProductProcessing
 import sarpy.processing.ortho_rectify
 import sarpy.processing.sicd.spectral_taper
 import sarpy.processing.sidd.sidd_structure_creation
 
 import sarpy.fast_processing.backend
+import sarpy.fast_processing.metadata
 from sarpy.fast_processing import adjust_sicd_osr
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import projection
@@ -121,7 +123,21 @@ def _create_sidd_metadata(proj, bounds, sidd_version):
         'Detected Image',
         'MONO8I',
         version=sidd_version)
+    _propagate_proc_metadata(ortho_helper.proj_helper.sicd, sidd_metadata)
     return sidd_metadata
+
+
+def _propagate_proc_metadata(sicd_meta, sidd_meta):
+    """Propagate SICD/ImageFormation/Processing parameters to SIDD/ProductProcessing/ProcessingModule"""
+    if sidd_meta.ProductProcessing is None:
+        sidd_meta.ProductProcessing = sarpy.io.product.sidd2_elements.ProductProcessing.ProductProcessingType()
+    if sicd_meta.ImageFormation.Processings:
+        for sicd_proc in sicd_meta.ImageFormation.Processings:
+            sidd_meta.ProductProcessing.addProcessingModule(
+                {"ModuleName": "",
+                 "name": sicd_proc.Type,
+                 "ModuleParameters": sicd_proc.Parameters.to_dict()}
+            )
 
 
 @numba.njit(parallel=True)
@@ -275,6 +291,17 @@ def main(args=None):
             else:
                 proj_pixels = sicd_pixels
                 sicd_pixels = None
+
+            sarpy.fast_processing.metadata.add_sicd_processing(
+                sicd_metadata,
+                __name__,
+                parameters={
+                    "sidelobe_control": config.sidelobe_control,
+                    "egr_threshold": config.egr_threshold,
+                    "egr_max_weight": config.egr_max_weight,
+                    "fft_backend": config.fft_backend,
+                },
+            )
 
             sidd_pixels, sidd_meta = sicd_to_sidd(proj_pixels, sicd_metadata,
                                                   sidd_version=config.sidd_version)

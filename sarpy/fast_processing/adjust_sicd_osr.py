@@ -9,6 +9,7 @@ import numpy as np
 import scipy.fft
 
 import sarpy.fast_processing.backend
+import sarpy.fast_processing.metadata
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import deskew
 from sarpy.fast_processing import read_sicd
@@ -210,6 +211,17 @@ def main(args=None):
                 sicd_pixels, sicd_meta = read_sicd.read_from_file(config.input_sicd)
 
             new_pixels, new_meta = sicd_to_sicd(sicd_pixels, sicd_meta, config.desired_osr)
+
+            sarpy.fast_processing.metadata.add_sicd_processing(
+                new_meta,
+                __name__,
+                parameters={
+                    "input_osr_row": 1.0 / (sicd_meta.Grid.Row.SS * sicd_meta.Grid.Row.ImpRespBW),
+                    "input_osr_col": 1.0 / (sicd_meta.Grid.Col.SS * sicd_meta.Grid.Col.ImpRespBW),
+                    "desired_osr": config.desired_osr,
+                    "fft_backend": config.fft_backend,
+                },
+            )
 
             with benchmark.howlong('write'):
                 write_sicd.write_to_file(config.output_sicd, new_pixels, new_meta)

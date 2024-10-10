@@ -1,3 +1,7 @@
+## [1.3.59rc.dev17]
+- Reorder processing to better match external algorithm documentation
+- Add optional spectral shaping prior to remap
+
 ## [1.3.59rc.dev16]
 - Code cleanup
 

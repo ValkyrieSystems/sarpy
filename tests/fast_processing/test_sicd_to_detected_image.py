@@ -75,6 +75,18 @@ def test_sva_smoke(sicd_file, tmp_path, sva_method):
     assert sidd_filename.exists()
 
 
+@pytest.mark.parametrize('spectral_shaping', [True, False])
+def test_spectral_shaping(sicd_file, tmp_path, spectral_shaping):
+    sidd_filename = tmp_path / 'smoke.sidd'
+    args = [str(sicd_file), str(sidd_filename)]
+    if spectral_shaping:
+        args.append('--spectral-shaping')
+    else:
+        args.append('--no-spectral-shaping')
+    stdi.main(args)
+    assert sidd_filename.exists()
+
+
 def test_sva_egr_smoke(sicd_file, tmp_path):
     sidd_filename = tmp_path / 'smoke.sidd'
     stdi.main([str(sicd_file), str(sidd_filename), '--sidelobe-control', 'SVA', '--egr-threshold', '0.1', '--egr-max-weight', '0.4'])

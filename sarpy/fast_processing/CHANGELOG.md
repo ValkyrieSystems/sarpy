@@ -1,3 +1,6 @@
+## [1.3.60.a0.dev2]
+- Synced with integration/1.3.60 branch (v1.3.60.dev2)
+
 ## [1.3.59rc.dev16]
 - Code cleanup
 

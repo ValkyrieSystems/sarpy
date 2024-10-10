@@ -27,7 +27,7 @@ from sarpy.fast_processing import remap
 from sarpy.fast_processing import write_sidd
 
 
-def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3):
+def sicd_to_sidd(data, sicd_metadata, sidd_version=3):
     """Produce a SIDD from a SICD
 
     Args
@@ -36,7 +36,7 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
         SICD pixel array.  2D array of complex values sampled on the SICD grid.
     sicd_metadata: `sarpy.io.complex.sicd_elements.SICD.SICDType`
         SICD Metadata object
-    sidd_version: int
+    sidd_version: int, optional
         Version of SIDD metadata to produce
 
     Returns
@@ -46,6 +46,7 @@ def sicd_to_sidd(data, sicd_metadata, proj_helper, ortho_bounds, sidd_version=3)
     sarpy.io.product.sidd3_elements.SIDD.SIDDType
         SIDD Metadata object
     """
+    proj_helper, ortho_bounds = _projection_info(sicd_metadata)
 
     # amplitude
     with benchmark.howlong('amplitude'):
@@ -176,7 +177,6 @@ def _kctr_polys_from_sicd_meta(sicd_metadata):
 def main(args=None):
     """CLI utility for creating SIDD NITFs from SICDs"""
     import argparse
-    import sarpy.io.complex
 
     parser = argparse.ArgumentParser()
     parser.add_argument('input_sicd', type=pathlib.Path, help="Path to input SICD")
@@ -276,12 +276,7 @@ def main(args=None):
                 proj_pixels = sicd_pixels
                 sicd_pixels = None
 
-            with sarpy.io.complex.open(str(config.input_sicd)) as reader:
-                # TODO refactor these to run directly from SICD XML and move to sicd_to_sicd()
-                proj_helper, ortho_bounds = _projection_info(reader, sicd_metadata)
-
             sidd_pixels, sidd_meta = sicd_to_sidd(proj_pixels, sicd_metadata,
-                                                  proj_helper=proj_helper, ortho_bounds=ortho_bounds,
                                                   sidd_version=config.sidd_version)
             proj_pixels = None
 
@@ -289,7 +284,7 @@ def main(args=None):
                 write_sidd.write_to_file(str(config.output_sidd), sidd_pixels, sidd_meta)
 
 
-def _projection_info(reader, sicd_meta):
+def _projection_info(sicd_meta):
     """Compute information necessary for ground projection"""
     # TODO refactor this function to run from SICD XML
     from sarpy.processing.ortho_rectify import NearestNeighborMethod
@@ -329,8 +324,17 @@ def _projection_info(reader, sicd_meta):
     }
     proj_helper = projection_helper.PGProjection(**ph_kwargs)
 
+    # legacy OrthoHelper requires an SICDTypeReader
+    from sarpy.io.complex.base import SICDTypeReader
+    class DummyReader(SICDTypeReader):
+        def __init__(self, sicd_meta):
+            super().__init__(data_segment=None, sicd_meta=sicd_meta)
+
+        def get_sicds_as_tuple(self):
+            return (self.sicd_meta, )
+
     ortho_helper = NearestNeighborMethod(
-        reader,
+        DummyReader(sicd_meta),
         proj_helper=proj_helper,
     )
     ortho_helper._sicd = sicd_meta

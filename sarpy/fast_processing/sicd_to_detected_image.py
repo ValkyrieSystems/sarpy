@@ -23,13 +23,14 @@ from sarpy.fast_processing import adjust_sicd_osr
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import projection
 from sarpy.fast_processing import sidelobe_control
+from sarpy.fast_processing import spectral_shaping
 from sarpy.fast_processing import sva
 from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import remap
 from sarpy.fast_processing import write_sidd
 
 
-def sicd_to_sidd(data, sicd_metadata, sidd_version=3):
+def sicd_to_sidd(data, sicd_metadata, sidd_version=3, apply_spectral_shaping=True):
     """Produce a SIDD from a SICD
 
     Args
@@ -40,6 +41,8 @@ def sicd_to_sidd(data, sicd_metadata, sidd_version=3):
         SICD Metadata object
     sidd_version: int, optional
         Version of SIDD metadata to produce
+    apply_spectral_shaping: bool
+        Indicates whether to apply spectral shaping prior to remap
 
     Returns
     -------
@@ -55,6 +58,25 @@ def sicd_to_sidd(data, sicd_metadata, sidd_version=3):
         amp_data = _amplitude(data)
         data = None
 
+    # Precompute remap parameters
+    with benchmark.howlong('gdm parameters'):
+        gdm_params = remap.gdm_metadata_parameters(sicd_metadata)
+        amp_to_dens_params = remap.gdm_remap_parameters(amp_data, **gdm_params)
+
+    # apply spectral shaping
+    if apply_spectral_shaping:
+        with benchmark.howlong('spectral shaping'):
+            shaped_data = spectral_shaping.apply_filter(amp_data)
+            amp_data = None
+    else:
+        shaped_data = amp_data
+        amp_data = None
+
+    # remap
+    with benchmark.howlong('perform remap'):
+        remap_data = remap.amp_to_dens(shaped_data, **amp_to_dens_params)
+        shaped_data = None
+
     # project
     with benchmark.howlong('projection'):
         # TODO replace projection_helper with output plane and grid computation
@@ -62,18 +84,17 @@ def sicd_to_sidd(data, sicd_metadata, sidd_version=3):
         # TODO adjust output plane based on chipped extent
         # TODO compute SIDD metadata from SICD metadata
         # TODO create callables for SICD <--> SIDD coordinates
-        proj_data = projection.project(amp_data, sicd_metadata, proj_helper, ortho_bounds)
-        amp_data = None
+        proj_data = projection.project(remap_data, sicd_metadata, proj_helper, ortho_bounds)
+        remap_data = None
 
-    with benchmark.howlong('remap'):
-        _clip_zero_inplace(proj_data)  # projection interpolation could result in small negative values
-        gdm_params = remap.gdm_parameters(sicd_metadata)
-        remap_data = remap.gdm(proj_data, **gdm_params)
+    with benchmark.howlong('output formatting'):
+        _clip_inplace(proj_data)  # projection interpolation could result in small negative values
+        output_data = proj_data.astype(np.uint8)
         proj_data = None
 
     sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds, sidd_version)
 
-    return remap_data, sidd_metadata
+    return output_data, sidd_metadata
 
 
 def _create_sidd_metadata(proj, bounds, sidd_version):
@@ -147,13 +168,15 @@ def _amplitude(data):
 
 
 @numba.njit(parallel=True)
-def _clip_zero_inplace(data):
-    """Inplace clip minimum values to zero"""
+def _clip_inplace(data):
+    """Inplace clip values to 0 and 255"""
     # Explicit numba loops are faster than np.clip
     for row in numba.prange(data.shape[0]):
         for col in numba.prange(data.shape[1]):
             if data[row, col] < 0:
                 data[row, col] = 0
+            elif data[row, col] > 255:
+                data[row, col] = 255
     return data
 
 def _scale_input_and_shift(coefs, scales, new_origins):
@@ -200,6 +223,8 @@ def main(args=None):
     parser.add_argument('--sidelobe-control', choices=['Skip', 'Uniform', 'Taylor', 'SVA', 'DSVA', 'JIQ'],
                         default='Skip', help="Desired sidelobe control. Default: %(default)s,"
                         " which retains weighting of input SICD.")
+    parser.add_argument('--spectral-shaping', action=argparse.BooleanOptionalAction, default=True,
+                        help="Apply spectral shaping")
     parser.add_argument('--egr-threshold', default=0.2, type=float,
                         help="Threshold for applying EGR. Default: %(default)s, 0 turns EGR off.")
     parser.add_argument('--egr-max-weight', default=0.45, type=float,
@@ -304,7 +329,8 @@ def main(args=None):
             )
 
             sidd_pixels, sidd_meta = sicd_to_sidd(proj_pixels, sicd_metadata,
-                                                  sidd_version=config.sidd_version)
+                                                  sidd_version=config.sidd_version,
+                                                  apply_spectral_shaping=config.spectral_shaping)
             proj_pixels = None
 
             with benchmark.howlong('write'):

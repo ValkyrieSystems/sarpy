@@ -87,39 +87,6 @@ def _median(data):
     return med_val
 
 
-@numba.njit(parallel=True)
-def density(data, dmin=30, mmult=40):
-    """
-    A monochromatic logarithmic density remapping function.
-
-    This is a digested version of contents presented in a 1994 publication
-    entitled "Softcopy Display of SAR Data" by Kevin Mangis. It is unclear where
-    this was first published or where it may be publicly available.
-
-    Args
-    ----
-    data: `numpy.ndarray`
-        2D array of amplitude data
-    dmin : float|int
-        A dynamic range parameter. Lower this widens the range, will raising it
-        narrows the range. This was historically fixed at 30.
-    mmult : float|int
-        A contrast parameter. Low values will result is higher contrast and quicker
-        saturation, while high values will decrease contrast and slower saturation.
-        There is some balance between the competing effects in the `dmin` and `mmult`
-        parameters.
-
-    Returns
-    -------
-    `numpy.ndarray`
-        2D array of remapped uint8 data
-
-    """
-
-    data_mean = _mean(data)
-    return amp_to_dens_uint8(data, dmin=dmin, mmult=mmult, data_mean=data_mean)
-
-
 def _gdm_cutoff_values(data_mean, data_median, weighting, graze_rad, slope_rad):
     # This is a subset of the GDM remap algorithm defined in the AGI Algorithm Description Document.
     # Only those parts of the algorithm relevant to existing SarPy capabilities are included here.
@@ -148,7 +115,7 @@ def _gdm_cutoff_values(data_mean, data_median, weighting, graze_rad, slope_rad):
     return cl, ch
 
 
-def gdm_parameters(sicd_metadata):
+def gdm_metadata_parameters(sicd_metadata):
     """Compute the metadata parameters needed for GDM remap
 
     Args
@@ -182,7 +149,7 @@ def gdm_parameters(sicd_metadata):
     }
 
 
-def gdm(data, *, weighting, graze_deg, slope_deg):
+def gdm_remap_parameters(data, *, weighting, graze_deg, slope_deg):
     """
     The Density remap using image specific parameters
 
@@ -199,11 +166,9 @@ def gdm(data, *, weighting, graze_deg, slope_deg):
 
     Returns
     -------
-    `numpy.ndarray`
-        2D array of remapped uint8 data
-
+    dict
+        Dictionary of keyword arguments for passing to `amp_to_dens()`
     """
-
     data_mean = _mean(data)
     with benchmark.howlong('median'):
         if data.size < 5e8:
@@ -213,14 +178,15 @@ def gdm(data, *, weighting, graze_deg, slope_deg):
     c_l, c_h = _gdm_cutoff_values(data_mean, data_median, weighting, np.deg2rad(graze_deg), np.deg2rad(slope_deg))
     if c_l == 0:
         c_l = np.finfo(data.real.dtype).tiny
-    return amp_to_dens_uint8(data,
-                             dmin=30,
-                             mmult=c_h / c_l,
-                             data_mean=c_l / 0.8)
+    return {
+         'dmin': -30,
+         'mmult': c_h / c_l,
+         'data_mean': c_l / 0.8
+    }
 
 
 @numba.njit(parallel=True)
-def amp_to_dens_uint8(data, *, dmin, mmult, data_mean):
+def amp_to_dens(data, *, dmin, mmult, data_mean):
     """
     Convert to density data for remap.
 
@@ -252,22 +218,16 @@ def amp_to_dens_uint8(data, *, dmin, mmult, data_mean):
     data_type = data.dtype.type
     C_L = 0.8*data_mean
     C_H = mmult*C_L  # decreasing mmult will result in higher contrast (and quicker saturation)
-    slope = data_type((255 - dmin)/np.log10(C_H/C_L))
-    constant = data_type(dmin - (slope*np.log10(C_L)))
+    slope = data_type(225/np.log10(C_H/C_L))
+    constant = data_type(30 - (slope*np.log10(C_L)))
 
-    out = np.empty_like(data, dtype=np.uint8)
+    out = np.empty(data.shape, data.dtype)
     for rowidx in numba.prange(out.shape[0]):
         for colidx in numba.prange(out.shape[1]):
 
-            if data[rowidx, colidx] == 0:
-                dens = 0.0
+            if data[rowidx, colidx] <= 0:
+                dens = dmin
             else:
-                dens = slope*np.log10(data[rowidx, colidx]) + constant
-
-            if dens < 0:
-                out[rowidx, colidx] = 0
-            elif dens > 255:
-                out[rowidx, colidx] = 255
-            else:
-                out[rowidx, colidx] = dens
+                dens = max(dmin, slope*np.log10(data[rowidx, colidx]) + constant)
+            out[rowidx, colidx] = dens
     return out

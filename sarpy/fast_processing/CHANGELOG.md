@@ -2,6 +2,10 @@
 - Synced with integration/1.3.60 branch (v1.3.60.dev2)
 - Add processing tags to XML metadata
 
+## [1.3.59rc.dev17]
+- Reorder processing to better match external algorithm documentation
+- Add optional spectral shaping prior to remap
+
 ## [1.3.59rc.dev16]
 - Code cleanup
 

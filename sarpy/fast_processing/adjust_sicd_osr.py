@@ -214,7 +214,7 @@ def main(args=None):
 
             sarpy.fast_processing.metadata.add_sicd_processing(
                 new_meta,
-                __name__,
+                pathlib.Path(__file__).name,
                 parameters={
                     "input_osr_row": 1.0 / (sicd_meta.Grid.Row.SS * sicd_meta.Grid.Row.ImpRespBW),
                     "input_osr_col": 1.0 / (sicd_meta.Grid.Col.SS * sicd_meta.Grid.Col.ImpRespBW),

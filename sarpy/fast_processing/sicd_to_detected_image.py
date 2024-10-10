@@ -319,7 +319,7 @@ def main(args=None):
 
             sarpy.fast_processing.metadata.add_sicd_processing(
                 sicd_metadata,
-                __name__,
+                pathlib.Path(__file__).name,
                 parameters={
                     "sidelobe_control": config.sidelobe_control,
                     "egr_threshold": config.egr_threshold,

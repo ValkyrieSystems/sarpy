@@ -247,7 +247,7 @@ def main(args=None):
 
             sarpy.fast_processing.metadata.add_sicd_processing(
                 new_meta,
-                __name__,
+                pathlib.Path(__file__).name,
                 parameters={
                     "sidelobe_control": config.sidelobe_control,
                     "fft_backend": config.fft_backend,

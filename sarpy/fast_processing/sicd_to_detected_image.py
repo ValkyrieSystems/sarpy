@@ -150,15 +150,15 @@ def _create_sidd_metadata(proj, bounds, sidd_version):
 
 def _propagate_proc_metadata(sicd_meta, sidd_meta):
     """Propagate SICD/ImageFormation/Processing parameters to SIDD/ProductProcessing/ProcessingModule"""
+    if not sicd_meta.ImageFormation.Processings:
+        return
     if sidd_meta.ProductProcessing is None:
         sidd_meta.ProductProcessing = sarpy.io.product.sidd2_elements.ProductProcessing.ProductProcessingType()
-    if sicd_meta.ImageFormation.Processings:
-        for sicd_proc in sicd_meta.ImageFormation.Processings:
-            sidd_meta.ProductProcessing.addProcessingModule(
-                {"ModuleName": "",
-                 "name": sicd_proc.Type,
-                 "ModuleParameters": sicd_proc.Parameters.to_dict()}
-            )
+    for sicd_proc in sicd_meta.ImageFormation.Processings:
+        new_pm = {"ModuleName": "", "name": sicd_proc.Type}
+        if sicd_proc.Parameters:
+            new_pm["ModuleParameters"] = sicd_proc.Parameters.to_dict()
+        sidd_meta.ProductProcessing.addProcessingModule(new_pm)
 
 
 @numba.njit(parallel=True)

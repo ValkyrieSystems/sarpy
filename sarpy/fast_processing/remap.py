@@ -181,7 +181,9 @@ def gdm_remap_parameters(data, *, weighting, graze_deg, slope_deg):
     return {
          'dmin': -30,
          'mmult': c_h / c_l,
-         'data_mean': c_l / 0.8
+         'data_mean': c_l / 0.8,
+         'c_l': c_l,
+         'c_h': c_h
     }
 
 

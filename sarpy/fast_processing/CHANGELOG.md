@@ -1,3 +1,6 @@
+## [1.3.59rc.dev18]
+- Add weighting to spectral shaping calculation
+
 ## [1.3.59rc.dev17]
 - Reorder processing to better match external algorithm documentation
 - Add optional spectral shaping prior to remap

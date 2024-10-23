@@ -13,5 +13,6 @@ def test_apply_filter():
     scipy_result = scipy.signal.convolve(input_data,
                                          fpss.DEFAULT_FILTER,
                                          mode='valid')
-    fpss_result = fpss.apply_filter(input_data)
-    assert np.allclose(fpss_result[2:-2,2:-2], scipy_result, atol=1e-6)
+    fpss_result = fpss.apply_filter(input_data, -1.0, 0.0, 1000.0)
+    mask = scipy_result > 0
+    assert np.allclose(fpss_result[2:-2,2:-2][mask], scipy_result[mask], atol=1e-6)

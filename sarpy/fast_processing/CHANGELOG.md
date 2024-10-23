@@ -1,6 +1,9 @@
-## [1.3.60a4.dev18]
+## [1.3.60a4.dev19]
 - Synced with integration/1.3.60 branch (v1.3.60a4)
 - Add processing tags to XML metadata
+
+## [1.3.59rc.dev18]
+- Add weighting to spectral shaping calculation
 
 ## [1.3.59rc.dev17]
 - Reorder processing to better match external algorithm documentation

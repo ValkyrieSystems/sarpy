@@ -30,7 +30,8 @@ from sarpy.fast_processing import remap
 from sarpy.fast_processing import write_sidd
 
 
-def sicd_to_sidd(data, sicd_metadata, sidd_version=3, apply_spectral_shaping=True):
+def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
+                 sidd_version=3, apply_spectral_shaping=True):
     """Produce a SIDD from a SICD
 
     Args
@@ -39,6 +40,8 @@ def sicd_to_sidd(data, sicd_metadata, sidd_version=3, apply_spectral_shaping=Tru
         SICD pixel array.  2D array of complex values sampled on the SICD grid.
     sicd_metadata: `sarpy.io.complex.sicd_elements.SICD.SICDType`
         SICD Metadata object
+    sidelobe_control: str
+        Sidelobe control applied
     sidd_version: int, optional
         Version of SIDD metadata to produce
     apply_spectral_shaping: bool
@@ -66,7 +69,13 @@ def sicd_to_sidd(data, sicd_metadata, sidd_version=3, apply_spectral_shaping=Tru
     # apply spectral shaping
     if apply_spectral_shaping:
         with benchmark.howlong('spectral shaping'):
-            shaped_data = spectral_shaping.apply_filter(amp_data)
+            ss_params = spectral_shaping.compute_spectral_shaping_parameters(amp_to_dens_params['c_l'],
+                                                                             amp_to_dens_params['c_h'],
+                                                                             sidelobe_control)
+            shaped_data = spectral_shaping.apply_filter(amp_data,
+                                                        ss_params['x_0'],
+                                                        ss_params['x_2'],
+                                                        ss_params['lim_n'])
             amp_data = None
     else:
         shaped_data = amp_data
@@ -74,7 +83,10 @@ def sicd_to_sidd(data, sicd_metadata, sidd_version=3, apply_spectral_shaping=Tru
 
     # remap
     with benchmark.howlong('perform remap'):
-        remap_data = remap.amp_to_dens(shaped_data, **amp_to_dens_params)
+        remap_data = remap.amp_to_dens(shaped_data,
+                                       dmin=amp_to_dens_params['dmin'],
+                                       mmult=amp_to_dens_params['mmult'],
+                                       data_mean=amp_to_dens_params['data_mean'])
         shaped_data = None
 
     # project
@@ -329,6 +341,7 @@ def main(args=None):
             )
 
             sidd_pixels, sidd_meta = sicd_to_sidd(proj_pixels, sicd_metadata,
+                                                  sidelobe_control=config.sidelobe_control,
                                                   sidd_version=config.sidd_version,
                                                   apply_spectral_shaping=config.spectral_shaping)
             proj_pixels = None

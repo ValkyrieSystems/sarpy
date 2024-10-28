@@ -21,3 +21,10 @@ The `sidelobe_control` utility can be used to produce a SICD NITF with modified 
 ```
 python -m sarpy.fast_processing.sidelobe_control --sidelobe-control <type> <path_to_input_sicd> <path_to_output_sicd>
 ```
+## weight_and_adjust_osr
+The `weight_and_adjust_osr` utility combines the functionality of the `adjust_sicd_osr` and `sidelobe_control` in
+a more efficient manner in both memory usage and computational cost.
+
+```
+python -m sarpy.fast_processing.weight_and_adjust_osr --sidelobe-control <type> --desired-osr <osr> <path_to_input_sicd> <path_to_output_sicd>
+```

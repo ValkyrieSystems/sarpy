@@ -114,7 +114,7 @@ def updated_sicd_metadata(sicd_metadata, new_weights, window_name, window_parame
     sicd_metadata: `sarpy.io.complex.sicd_elements.SICD.SICDType`
         SICD Metadata object
     new_weights: `numpy.ndarray`
-        1-D array of desired weighting.  Will be applied in both row and col diretions.
+        1-D array of desired weighting.  Will be applied in both row and col directions.
         Existing weighting will be removed.
     window_name: str
         Name of the window to record in SICD metadata

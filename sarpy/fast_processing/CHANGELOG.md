@@ -1,3 +1,6 @@
+## [1.3.60a4.dev20]
+- Add pre-detection oversample ratio option to sicd_to_detected_image
+
 ## [1.3.60a4.dev19]
 - Synced with integration/1.3.60 branch (v1.3.60a4)
 - Add processing tags to XML metadata

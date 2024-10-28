@@ -80,7 +80,7 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
 
     with benchmark.howlong("fft1 in copy"):
         # Fourier Transform input data
-        fft1_buff = np.zeros_like(cdata, shape=fft1_shape)
+        fft1_buff = np.zeros(shape=fft1_shape, dtype=cdata.dtype)
         fft1_in_slices = [slice(None), slice(None)]
         fft1_in_slices[axis_index] = slice(insert_offset, insert_offset + num_samps_in)
         fft1_buff[tuple(fft1_in_slices)] = cdata
@@ -99,7 +99,7 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
         fft_transfer_slices1[axis_index] = (slice(-neg_start, None))
         fft_transfer_slices2 = [slice(None), slice(None)]
         fft_transfer_slices2[axis_index] = (slice(None, pos_end))
-        fft2_buff = np.zeros_like(cdata, shape=fft2_shape)
+        fft2_buff = np.zeros(shape=fft2_shape, dtype=cdata.dtype)
         fft2_buff[tuple(fft_transfer_slices1)] = fft1[tuple(fft_transfer_slices1)]
         fft2_buff[tuple(fft_transfer_slices2)] = fft1[tuple(fft_transfer_slices2)]
         del fft1
@@ -117,7 +117,7 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
         del fft2_buff
 
     with benchmark.howlong("crop output"):
-        out_cdata = np.zeros_like(cdata, shape=out_shape)
+        out_cdata = np.zeros(shape=out_shape, dtype=cdata.dtype)
         fft2_out_slices = [slice(None), slice(None)]
         fft2_out_slices[axis_index] = slice(extract_offset, extract_offset + num_samps_out)
         out_cdata = fft2[tuple(fft2_out_slices)]
@@ -183,7 +183,12 @@ def _get_sicd_resamp_params(mdata, direction, desired_osr):
             'extract_offset': extract_offset,
             'num_samps_out': num_samps_out,
             'resampled_scp_index': resampled_scp_index,
-            'resample_rate': rsr}
+            'resample_rate': rsr,
+            'ipr_bw': grid_dir.ImpRespBW,
+            'ss': grid_dir.SS,
+            'input_osr': current_osr,
+            'output_osr': current_osr * rsr,
+            'sgn': grid_dir.Sgn}
 
 
 def main(args=None):

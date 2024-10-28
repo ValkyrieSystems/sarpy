@@ -12,7 +12,7 @@ import numpy.polynomial.polynomial as npp
 @numba.njit(parallel=True)
 def _apply_phase_poly(array, phase_poly, row_0, row_ss, col_0, col_ss):
     """numba parallelized phase poly application"""
-    out = np.empty_like(array)
+    out = np.empty(array.shape, array.dtype)
     for rowidx in numba.prange(out.shape[0]):
         row_val = row_0 + rowidx * row_ss
         col_poly = phase_poly[-1, :]

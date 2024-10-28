@@ -111,7 +111,7 @@ def uncoup_sva(
     The implementation of edge-glint retention (EGR) originates from the SVA algorithm definition found in AGI ADD 2.8.16.
     """
     # create new data array and copy boundary values
-    sva_data = np.zeros_like(data)
+    sva_data = np.zeros(shape=data.shape, dtype=data.dtype)
     copy_boundaries(data, sva_data, 2, 2)
 
     # calculate poly coefficients per 2 samples
@@ -296,7 +296,7 @@ def d_sva(
     a_ce_col = compute_a(ce_col_osr, ws_col, w1_ce_col)
 
     # create new data array and copy boundary values
-    sva_data = np.zeros_like(data)
+    sva_data = np.zeros(shape=data.shape, dtype=data.dtype)
     copy_boundaries(data, sva_data, ce_row_osr, ce_col_osr)
 
     # test if given row and column osrs are integer
@@ -524,7 +524,7 @@ def jiq_sva_1d(row, osr, edge_glint_threshold, edge_glint_max_weight):
         wgt[apply_egr] = edge_glint_max_weight
 
     # create results array and copy over boundary values unaffected by SVA
-    upsample_results = np.zeros_like(row)
+    upsample_results = np.zeros(shape=row.shape, dtype=row.dtype)
     upsample_results[:osr] = row[:osr]
     upsample_results[-osr:] = row[-osr:]
 
@@ -553,7 +553,7 @@ def joint_iq_sva(
     """
     if input_osr == upsample_osr:
         # no upsampling required
-        sva_results = np.zeros_like(data)
+        sva_results = np.zeros(shape=data.shape, dtype=data.dtype)
         for m in numba.prange(data.shape[0]):
             row = data[m, :]
             sva_results[m, :] = jiq_sva_1d(
@@ -764,7 +764,7 @@ def jiq_1d_params(data, fft1_size, fft2_size, interim_osr,
         row = data[m, :]
         fft1_buff = np.zeros((fft1_size,), dtype=row.dtype)
         fft1_buff[insert_offset: insert_offset + num_samps_in] = row
-        fft1 = np.zeros_like(fft1_buff)
+        fft1 = np.zeros(shape=fft1_buff.shape, dtype=fft1_buff.dtype)
         with numba.objmode():
             fft1[:] = scipy.fft.fft(fft1_buff, norm="forward", workers=1)
         fft2_buff = np.zeros((fft2_size,), dtype=row.dtype)
@@ -774,7 +774,7 @@ def jiq_1d_params(data, fft1_size, fft2_size, interim_osr,
         fft2_buff[-neg_start:] = fft1[-neg_start:]
         fft2_buff[:pos_end] = fft1[:pos_end]
         fft2_buff = fft2_buff * phase_vec
-        fft2 = np.zeros_like(fft2_buff)
+        fft2 = np.zeros(shape=fft2_buff.shape, dtype=fft2_buff.dtype)
         with numba.objmode():
             fft2[:] = scipy.fft.ifft(fft2_buff, norm="forward", workers=1)
 

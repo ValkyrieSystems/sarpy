@@ -27,6 +27,7 @@ from sarpy.fast_processing import spectral_shaping
 from sarpy.fast_processing import sva
 from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import remap
+from sarpy.fast_processing import weight_and_adjust_osr
 from sarpy.fast_processing import write_sidd
 
 
@@ -237,6 +238,9 @@ def main(args=None):
                         " which retains weighting of input SICD.")
     parser.add_argument('--spectral-shaping', action=argparse.BooleanOptionalAction, default=True,
                         help="Apply spectral shaping")
+    parser.add_argument('--pre-detection-osr', default=None, type=str, choices=['5/4', '4/3', '3/2', '2/1'],
+                        help="Oversample ratio prior to detection.  Will impact quality of DSVA and JIQ."
+                        "  SVA sets to 2/1  JIQ defaults to 3/2")
     parser.add_argument('--egr-threshold', default=0.2, type=float,
                         help="Threshold for applying EGR. Default: %(default)s, 0 turns EGR off.")
     parser.add_argument('--egr-max-weight', default=0.45, type=float,
@@ -260,91 +264,112 @@ def main(args=None):
     if config.log_memory_usage:
         tracemalloc.start()
 
+    sidelobe_option = config.sidelobe_control.upper()
+    if sidelobe_option in {'SVA', 'DSVA', 'JIQ'}:
+        window_name = 'Uniform'
+    else:
+        window_name = sidelobe_option
+    pre_detection_osr = '2/1' if sidelobe_option == 'SVA' else config.pre_detection_osr
+    if pre_detection_osr is None and sidelobe_option == 'JIQ':
+        pre_detection_osr = '3/2'
+    if pre_detection_osr is not None:
+        quotient = pre_detection_osr.split('/')
+        numerator = float(quotient[0])
+        denominator = float(quotient[1])
+        target_osr = numerator / denominator
+    else:
+        target_osr = None
+
     with sarpy.fast_processing.backend.set_fft_backend(config.fft_backend):
         with benchmark.howlong("SICDtoSIDD"):
             with benchmark.howlong('read'):
                 sicd_pixels, sicd_metadata = read_sicd.read_from_file(config.input_sicd)
 
-            if config.sidelobe_control != 'Skip':
-                with benchmark.howlong('sidelobe'):
-                    if config.sidelobe_control.upper() in {'SVA', 'DSVA', 'JIQ'}:
-                        window_name = 'Uniform'
-                        taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
-                        new_window = taper.get_vals(65, sym=True)
-                        new_params = taper.window_pars
-                        with benchmark.howlong('unweight'):
-                            unweighted_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
-                                                                                             sicd_metadata,
-                                                                                             new_window,
-                                                                                             window_name,
-                                                                                             new_params)
-                            sicd_pixels = None
+            apply_weighting = (window_name != 'SKIP')
+            adjust_osr = (target_osr is not None and sidelobe_option != "JIQ")
+            if apply_weighting:
+                taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
+                new_window = taper.get_vals(65, sym=True)
+                new_params = taper.window_pars
 
-                        if config.sidelobe_control.upper() == 'SVA':
-                            with benchmark.howlong('Adjust OSR'):
-                                sicd_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(unweighted_pixels,
-                                                                                        sicd_metadata,
-                                                                                        2.0)
-                                unweighted_pixels = None
-                                row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
-                                proj_pixels = sva.uncoup_sva(sicd_pixels,
-                                                             row_kctr_poly_rad,
-                                                             col_kctr_poly_rad,
-                                                             edge_glint_threshold=config.egr_threshold,
-                                                             edge_glint_max_weight=config.egr_max_weight)
-                                sicd_pixels = None
-                        elif config.sidelobe_control.upper() == 'DSVA':
-                            with benchmark.howlong('DSVA'):
-                                row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
-                                col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
-                                row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
-                                proj_pixels = sva.d_sva(unweighted_pixels,
-                                                        row_nyq_rate,
-                                                        col_nyq_rate,
-                                                        row_kctr_poly_rad,
-                                                        col_kctr_poly_rad,
-                                                        edge_glint_threshold=config.egr_threshold,
-                                                        edge_glint_max_weight=config.egr_max_weight)
-                                unweighted_pixels = None
-                        elif config.sidelobe_control.upper() == 'JIQ':
-                            with benchmark.howlong('JIQ'):
-                                proj_pixels, sicd_metadata = sva.jiq_sicd(unweighted_pixels,
-                                                                        sicd_metadata,
-                                                                        edge_glint_threshold=config.egr_threshold,
-                                                                        edge_glint_max_weight=config.egr_max_weight)
-                                unweighted_pixels = None
-                    else:
-                        with benchmark.howlong('Weighting'):
-                            window_name = config.sidelobe_control.upper()
-                            taper = sarpy.processing.sicd.spectral_taper.Taper(window_name)
-                            new_window = taper.get_vals(65, sym=True)
-                            new_params = taper.window_pars
-                            proj_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
-                                                                                    sicd_metadata,
-                                                                                    new_window,
-                                                                                    window_name,
-                                                                                    new_params)
-                            sicd_pixels = None
+            if apply_weighting and adjust_osr:
+                with benchmark.howlong('Weighting and OSR Adjust'):
+                    osr_pixels, sicd_metadata = weight_and_adjust_osr.sicd_to_sicd(sicd_pixels,
+                                                                                   sicd_metadata,
+                                                                                   target_osr,
+                                                                                   new_window,
+                                                                                   window_name,
+                                                                                   new_params)
+            elif apply_weighting:
+                with benchmark.howlong('Weighting'):
+                    osr_pixels, sicd_metadata = sidelobe_control.sicd_to_sicd(sicd_pixels,
+                                                                              sicd_metadata,
+                                                                              new_window,
+                                                                              window_name,
+                                                                              new_params)
+            elif adjust_osr:
+                with benchmark.howlong('Adjust OSR'):
+                    osr_pixels, sicd_metadata = adjust_sicd_osr.sicd_to_sicd(sicd_pixels,
+                                                                             sicd_metadata,
+                                                                             target_osr)
             else:
-                proj_pixels = sicd_pixels
-                sicd_pixels = None
+                osr_pixels = sicd_pixels
+            sicd_pixels = None
+
+            if sidelobe_option in {'SVA', 'DSVA', 'JIQ'}:
+                with benchmark.howlong('Apodization'):
+                    if sidelobe_option == 'SVA':
+                        with benchmark.howlong('Apply 2D Independent IQ SVA'):
+                            row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
+                            sp_pixels = sva.uncoup_sva(osr_pixels,
+                                                       row_kctr_poly_rad,
+                                                       col_kctr_poly_rad,
+                                                       edge_glint_threshold=config.egr_threshold,
+                                                       edge_glint_max_weight=config.egr_max_weight)
+                            osr_pixels = None
+                    elif sidelobe_option == 'DSVA':
+                        with benchmark.howlong('Apply Double SVA'):
+                            row_nyq_rate = 1 / (sicd_metadata.Grid.Row.SS * sicd_metadata.Grid.Row.ImpRespBW)
+                            col_nyq_rate = 1 / (sicd_metadata.Grid.Col.SS * sicd_metadata.Grid.Col.ImpRespBW)
+                            row_kctr_poly_rad, col_kctr_poly_rad = _kctr_polys_from_sicd_meta(sicd_metadata)
+                            sp_pixels = sva.d_sva(osr_pixels,
+                                                  row_nyq_rate,
+                                                  col_nyq_rate,
+                                                  row_kctr_poly_rad,
+                                                  col_kctr_poly_rad,
+                                                  edge_glint_threshold=config.egr_threshold,
+                                                  edge_glint_max_weight=config.egr_max_weight)
+                            osr_pixels = None
+                    else:
+                        with benchmark.howlong('Apply Joint IQ SVA'):
+                            sp_pixels, sicd_metadata = sva.jiq_sicd(osr_pixels,
+                                                                    sicd_metadata,
+                                                                    desired_osr=numerator,
+                                                                    decimation=denominator,
+                                                                    edge_glint_threshold=config.egr_threshold,
+                                                                    edge_glint_max_weight=config.egr_max_weight)
+                            osr_pixels = None
+            else:
+                sp_pixels = osr_pixels
+                osr_pixels = None
 
             sarpy.fast_processing.metadata.add_sicd_processing(
                 sicd_metadata,
                 pathlib.Path(__file__).name,
                 parameters={
                     "sidelobe_control": config.sidelobe_control,
+                    "spectral_shaping": config.spectral_shaping,
+                    "pre_detection_osr": config.pre_detection_osr,
                     "egr_threshold": config.egr_threshold,
                     "egr_max_weight": config.egr_max_weight,
                     "fft_backend": config.fft_backend,
                 },
             )
-
-            sidd_pixels, sidd_meta = sicd_to_sidd(proj_pixels, sicd_metadata,
-                                                  sidelobe_control=config.sidelobe_control,
+            sidd_pixels, sidd_meta = sicd_to_sidd(sp_pixels, sicd_metadata,
+                                                  sidelobe_control=sidelobe_option,
                                                   sidd_version=config.sidd_version,
                                                   apply_spectral_shaping=config.spectral_shaping)
-            proj_pixels = None
+            sp_pixels = None
 
             with benchmark.howlong('write'):
                 write_sidd.write_to_file(str(config.output_sidd), sidd_pixels, sidd_meta)

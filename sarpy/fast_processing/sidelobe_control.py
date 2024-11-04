@@ -91,16 +91,15 @@ def sicd_to_sicd(data, sicd_metadata, new_weights, window_name, window_parameter
                 # Apply the taper to the spectrum.
                 taper_2d = (padded_taper[:, np.newaxis] if axis == 'Row' else padded_taper[np.newaxis, :]).astype(fft_data.dtype)
             with benchmark.howlong("multiply"):
-                weighted_data = fft_data * taper_2d
-                fft_data = None
+                fft_data *= taper_2d
 
             with benchmark.howlong("ifft"):
                 # Inverse transform without FFTSHIFT and trim back to the original image size.
                 if axis_mdata.Sgn == -1:
-                    data = scipy.fft.ifft(weighted_data, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
+                    data = scipy.fft.ifft(fft_data, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
                 else:
-                    data = scipy.fft.fft(weighted_data, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
-                weighted_data = None
+                    data = scipy.fft.fft(fft_data, n=good_fft_size, axis=axis_index, workers=-1)[:nrows, :ncols]
+                fft_data = None
 
     new_sicd_metadata = updated_sicd_metadata(sicd_metadata, new_weights, window_name, window_parameters)
     return data, new_sicd_metadata

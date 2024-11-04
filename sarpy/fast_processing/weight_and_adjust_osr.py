@@ -20,6 +20,7 @@ from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import deskew
 from sarpy.fast_processing import read_sicd
 from sarpy.fast_processing import sidelobe_control
+from sarpy.fast_processing import utils
 from sarpy.fast_processing import write_sicd
 
 
@@ -80,7 +81,7 @@ def sicd_to_sicd(data, sicd_metadata, desired_osr,
             fft1_buff = np.zeros(shape=fft1_shape, dtype=deskew_data.dtype)
             fft1_in_slices = [slice(None), slice(None)]
             fft1_in_slices[axis_index] = slice(resamp_params['insert_offset'], resamp_params['insert_offset'] + resamp_params['num_samps_in'])
-            fft1_buff[tuple(fft1_in_slices)] = deskew_data
+            utils.parallel_copyto(fft1_buff[tuple(fft1_in_slices)], deskew_data)
             deskew_data = None
 
         with benchmark.howlong(f"{axis} fft1"):
@@ -115,8 +116,10 @@ def sicd_to_sicd(data, sicd_metadata, desired_osr,
             fft_transfer_slices2 = [slice(None), slice(None)]
             fft_transfer_slices2[axis_index] = (slice(None, pos_end))
             fft2_buff = np.zeros(shape=fft2_shape, dtype=fft1_data.dtype)
-            fft2_buff[tuple(fft_transfer_slices1)] = fft1_data[tuple(fft_transfer_slices1)]
-            fft2_buff[tuple(fft_transfer_slices2)] = fft1_data[tuple(fft_transfer_slices2)]
+            utils.parallel_copyto(fft2_buff[tuple(fft_transfer_slices1)],
+                                  fft1_data[tuple(fft_transfer_slices1)])
+            utils.parallel_copyto(fft2_buff[tuple(fft_transfer_slices2)],
+                                  fft1_data[tuple(fft_transfer_slices2)])
             fft1_data = None
 
         with benchmark.howlong(f"{axis} apply phase"):
@@ -139,7 +142,8 @@ def sicd_to_sicd(data, sicd_metadata, desired_osr,
             inwork_data = np.zeros(shape=out_shape, dtype=fft2_data.dtype)
             fft2_out_slices = [slice(None), slice(None)]
             fft2_out_slices[axis_index] = slice(resamp_params['extract_offset'], resamp_params['extract_offset'] + resamp_params['num_samps_out'])
-            inwork_data[...] = fft2_data[tuple(fft2_out_slices)]
+            utils.parallel_copyto(inwork_data,
+                                  fft2_data[tuple(fft2_out_slices)])
             fft2_data = None
 
         mdata = updated_sicd_metadata(mdata, axis, resamp_params, existing_weights,

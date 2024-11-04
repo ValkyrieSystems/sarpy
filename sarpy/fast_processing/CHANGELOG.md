@@ -1,3 +1,6 @@
+## [1.3.60a4.dev21]
+- Add parallel copys to reduce processing timelines
+
 ## [1.3.60a4.dev20]
 - Add pre-detection oversample ratio option to sicd_to_detected_image
 

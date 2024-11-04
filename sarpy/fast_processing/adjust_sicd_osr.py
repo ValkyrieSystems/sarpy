@@ -13,6 +13,7 @@ import sarpy.fast_processing.metadata
 from sarpy.fast_processing import benchmark
 from sarpy.fast_processing import deskew
 from sarpy.fast_processing import read_sicd
+from sarpy.fast_processing import utils
 from sarpy.fast_processing import write_sicd
 
 
@@ -83,12 +84,13 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
         fft1_buff = np.zeros(shape=fft1_shape, dtype=cdata.dtype)
         fft1_in_slices = [slice(None), slice(None)]
         fft1_in_slices[axis_index] = slice(insert_offset, insert_offset + num_samps_in)
-        fft1_buff[tuple(fft1_in_slices)] = cdata
+        utils.parallel_copyto(fft1_buff[tuple(fft1_in_slices)],
+                              cdata)
 
     with benchmark.howlong("fft"):
         # Perform forward transform
         fft1 = scipy.fft.fft(fft1_buff, n=fft1_size, axis=axis_index, norm="forward", workers=-1)
-        del fft1_buff
+        fft1_buff = None
 
     with benchmark.howlong("fft transfer copy"):
         # Copy from fft1 to fft2
@@ -100,28 +102,32 @@ def _fft_pad_ifft(cdata, axis, resamp_params):
         fft_transfer_slices2 = [slice(None), slice(None)]
         fft_transfer_slices2[axis_index] = (slice(None, pos_end))
         fft2_buff = np.zeros(shape=fft2_shape, dtype=cdata.dtype)
-        fft2_buff[tuple(fft_transfer_slices1)] = fft1[tuple(fft_transfer_slices1)]
-        fft2_buff[tuple(fft_transfer_slices2)] = fft1[tuple(fft_transfer_slices2)]
-        del fft1
+        utils.parallel_copyto(fft2_buff[tuple(fft_transfer_slices1)],
+                              fft1[tuple(fft_transfer_slices1)])
+        utils.parallel_copyto(fft2_buff[tuple(fft_transfer_slices2)],
+                              fft1[tuple(fft_transfer_slices2)])
+        fft1 = None
 
     with benchmark.howlong("apply phase"):
         # Apply phase shift so that the reference index will be an integer
         phase_vec = np.exp(2*np.pi*1j*scipy.fft.fftfreq(fft2_size) * frac_shift).astype(np.complex64)
         phase_vec_slices = [np.newaxis, np.newaxis]
         phase_vec_slices[axis_index] = slice(None)
-        fft2_buff = fft2_buff * phase_vec[tuple(phase_vec_slices)]
+        fft2_buff *= phase_vec[tuple(phase_vec_slices)]
 
     with benchmark.howlong("ifft"):
         # Back Transform data to desired sampling
         fft2 = scipy.fft.ifft(fft2_buff, n=fft2_size, axis=axis_index, norm="forward", workers=-1)
-        del fft2_buff
+        fft2_buff = None
 
     with benchmark.howlong("crop output"):
-        out_cdata = np.zeros(shape=out_shape, dtype=cdata.dtype)
-        fft2_out_slices = [slice(None), slice(None)]
-        fft2_out_slices[axis_index] = slice(extract_offset, extract_offset + num_samps_out)
-        out_cdata = fft2[tuple(fft2_out_slices)]
-        del fft2
+        with benchmark.howlong("crop copy"):
+            out_cdata = np.zeros(shape=out_shape, dtype=cdata.dtype)
+            fft2_out_slices = [slice(None), slice(None)]
+            fft2_out_slices[axis_index] = slice(extract_offset, extract_offset + num_samps_out)
+            utils.parallel_copyto(out_cdata,
+                                  fft2[tuple(fft2_out_slices)])
+        fft2 = None
 
     return out_cdata
 

@@ -1,3 +1,6 @@
+## [1.3.60a4.dev22]
+- Add timestamps to verbose logging
+
 ## [1.3.60a4.dev21]
 - Add parallel copys to reduce processing timelines
 

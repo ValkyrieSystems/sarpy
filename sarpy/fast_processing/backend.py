@@ -45,3 +45,10 @@ def set_fft_backend(backend):
     scipy_backend = find_scipy_backend(backend)
     logging.info(f"Using FFT backend {scipy_backend}")
     return scipy.fft.set_backend(scipy_backend)
+
+
+def initialize_logging(level):
+    """Configure the logging module"""
+    logging.basicConfig(level=level,
+                        datefmt='%Y-%m-%dT%H:%M:%S',
+                        format='%(levelname)s:%(name)s:%(asctime)s.%(msecs)03d:%(message)s')

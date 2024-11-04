@@ -276,7 +276,8 @@ def main(args=None):
     assert config.desired_osr > 1.0
 
     loglevels = [logging.WARNING, logging.INFO, logging.DEBUG]
-    logging.basicConfig(level=loglevels[min(config.verbose, len(loglevels)-1)])
+    loglevel = loglevels[min(config.verbose, len(loglevels)-1)]
+    sarpy.fast_processing.backend.initialize_logging(loglevel)
 
     with sarpy.fast_processing.backend.set_fft_backend(config.fft_backend):
         with benchmark.howlong('Weight and Adjust OSR'):

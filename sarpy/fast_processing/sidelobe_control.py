@@ -229,7 +229,8 @@ def main(args=None):
     config = parser.parse_args(args)
 
     loglevels = [logging.WARNING, logging.INFO, logging.DEBUG]
-    logging.basicConfig(level=loglevels[min(config.verbose, len(loglevels)-1)])
+    loglevel = loglevels[min(config.verbose, len(loglevels)-1)]
+    sarpy.fast_processing.backend.initialize_logging(loglevel)
 
     with sarpy.fast_processing.backend.set_fft_backend(config.fft_backend):
         with benchmark.howlong('sidelobe_control'):

@@ -257,7 +257,7 @@ def main(args=None):
 
     loglevels = [logging.WARNING, logging.INFO, logging.DEBUG]
     loglevel = loglevels[min(config.verbose, len(loglevels)-1)]
-    logging.basicConfig(level=loglevel)
+    sarpy.fast_processing.backend.initialize_logging(loglevel)
     logging.info(f"Log level set to {logging.getLevelName(loglevel)}")
 
     logging.info(f"Memory usage logging enabled: {config.log_memory_usage}")

@@ -1,3 +1,6 @@
+## [1.3.60a4.dev23]
+- Add option for 16-bit SIDD output
+
 ## [1.3.60a4.dev22]
 - Add timestamps to verbose logging
 

@@ -91,3 +91,12 @@ def test_sva_egr_smoke(sicd_file, tmp_path):
     sidd_filename = tmp_path / 'smoke.sidd'
     stdi.main([str(sicd_file), str(sidd_filename), '--sidelobe-control', 'SVA', '--egr-threshold', '0.1', '--egr-max-weight', '0.4'])
     assert sidd_filename.exists()
+
+
+def test_bit_depth(sicd_file, tmp_path):
+    sidd_8bit = tmp_path / '8bit.sidd'
+    sidd_16bit = tmp_path / '16bit.sidd'
+    stdi.main([str(sicd_file), str(sidd_8bit), '--bit-depth', '8'])
+    stdi.main([str(sicd_file), str(sidd_16bit), '--bit-depth', '16'])
+
+    assert sidd_16bit.stat().st_size == pytest.approx(2 * sidd_8bit.stat().st_size, rel=0.1)

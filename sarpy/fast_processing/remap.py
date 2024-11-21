@@ -87,6 +87,27 @@ def _median(data):
     return med_val
 
 
+# This is deliberate duplicative with _median, as combining everything there seems to yield better numba results
+@numba.njit(parallel=True)
+def _minmax(data):
+    """numba parallelized min/max"""
+    # Compute min/max
+    max_vals = np.empty(data.shape[0], data.dtype)
+    min_vals = np.empty(data.shape[0], data.dtype)
+    for rowidx in numba.prange(data.shape[0]):
+        max_vals[rowidx] = data[rowidx, 0]
+        min_vals[rowidx] = data[rowidx, 0]
+        for colidx in range(1, data.shape[1]):
+            if data[rowidx, colidx] > max_vals[rowidx]:
+                max_vals[rowidx] = data[rowidx, colidx]
+            if data[rowidx, colidx] < min_vals[rowidx]:
+                min_vals[rowidx] = data[rowidx, colidx]
+
+    min_val = min(min_vals)
+    max_val = max(max_vals)
+    return min_val, max_val
+
+
 def _gdm_cutoff_values(data_mean, data_median, weighting, graze_rad, slope_rad):
     # This is a subset of the GDM remap algorithm defined in the AGI Algorithm Description Document.
     # Only those parts of the algorithm relevant to existing SarPy capabilities are included here.
@@ -232,4 +253,60 @@ def amp_to_dens(data, *, dmin, mmult, data_mean):
             else:
                 dens = max(dmin, slope*np.log10(data[rowidx, colidx]) + constant)
             out[rowidx, colidx] = dens
+    return out
+
+
+def linear_remap_parameters(data):
+    """
+    Determine image-specific parameters for linear remap
+
+    Args
+    ----
+    data: `numpy.ndarray`
+        2D array of floating point amplitude data
+
+    Returns
+    -------
+    dict
+        Dictionary of keyword arguments for passing to `linear_remap()`
+    """
+    min_val, max_val = _minmax(data)
+    return {
+         'min_input_val': min_val,
+         'max_input_val': max_val,
+         'min_output_val': 0,
+         'max_output_val': 2**16 - 1
+    }
+
+
+@numba.njit(parallel=True)
+def linear_remap(data, *, min_input_val, max_input_val, min_output_val, max_output_val):
+    """
+    Linearly remap data to specified range
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D array of floating point amplitude data
+    min_input_val : float|int
+        Data with this value will be mapped to `min_output_val`
+    max_input_val : float|int
+        Data with this value will be mapped to `max_output_val`
+    min_output_val : float|int
+        Value to which `min_input_val` will be mapped
+    max_output_val : float|int
+        Value to which `max_input_val` will be mapped
+
+    Returns
+    -------
+    numpy.ndarray
+    """
+
+    slope = (max_output_val - min_output_val) / (max_input_val - min_input_val)
+    constant = min_input_val
+
+    out = np.empty(data.shape, data.dtype)
+    for rowidx in numba.prange(out.shape[0]):
+        for colidx in numba.prange(out.shape[1]):
+            out[rowidx, colidx] = (data[rowidx, colidx] - constant) * slope
     return out

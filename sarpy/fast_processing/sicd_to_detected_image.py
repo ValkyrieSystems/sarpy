@@ -32,7 +32,8 @@ from sarpy.fast_processing import write_sidd
 
 
 def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
-                 sidd_version=3, apply_spectral_shaping=True):
+                 sidd_version=3, apply_spectral_shaping=True,
+                 bit_depth=8):
     """Produce a SIDD from a SICD
 
     Args
@@ -47,6 +48,8 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
         Version of SIDD metadata to produce
     apply_spectral_shaping: bool
         Indicates whether to apply spectral shaping prior to remap
+    bit_depth: int
+        Indicates bits to use for output.  Must be 8 or 16.
 
     Returns
     -------
@@ -55,6 +58,7 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
     sarpy.io.product.sidd3_elements.SIDD.SIDDType
         SIDD Metadata object
     """
+    assert bit_depth in [8, 16]
     proj_helper, ortho_bounds = _projection_info(sicd_metadata)
 
     # amplitude
@@ -63,32 +67,39 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
         data = None
 
     # Precompute remap parameters
-    with benchmark.howlong('gdm parameters'):
-        gdm_params = remap.gdm_metadata_parameters(sicd_metadata)
-        amp_to_dens_params = remap.gdm_remap_parameters(amp_data, **gdm_params)
-
-    # apply spectral shaping
-    if apply_spectral_shaping:
-        with benchmark.howlong('spectral shaping'):
-            ss_params = spectral_shaping.compute_spectral_shaping_parameters(amp_to_dens_params['c_l'],
-                                                                             amp_to_dens_params['c_h'],
-                                                                             sidelobe_control)
-            shaped_data = spectral_shaping.apply_filter(amp_data,
-                                                        ss_params['x_0'],
-                                                        ss_params['x_2'],
-                                                        ss_params['lim_n'])
+    if bit_depth == 8:
+        with benchmark.howlong('gdm parameters'):
+            gdm_params = remap.gdm_metadata_parameters(sicd_metadata)
+            amp_to_dens_params = remap.gdm_remap_parameters(amp_data, **gdm_params)
+        if apply_spectral_shaping:
+            with benchmark.howlong('spectral shaping'):
+                ss_params = spectral_shaping.compute_spectral_shaping_parameters(amp_to_dens_params['c_l'],
+                                                                                 amp_to_dens_params['c_h'],
+                                                                                 sidelobe_control)
+                shaped_data = spectral_shaping.apply_filter(amp_data,
+                                                            ss_params['x_0'],
+                                                            ss_params['x_2'],
+                                                            ss_params['lim_n'])
+                amp_data = None
+        else:
+            shaped_data = amp_data
             amp_data = None
+        with benchmark.howlong('perform density remap'):
+            remap_data = remap.amp_to_dens(shaped_data,
+                                           dmin=amp_to_dens_params['dmin'],
+                                           mmult=amp_to_dens_params['mmult'],
+                                           data_mean=amp_to_dens_params['data_mean'])
+            shaped_data = None
     else:
-        shaped_data = amp_data
+        with benchmark.howlong('linear remap parameters'):
+            linear_params = remap.linear_remap_parameters(amp_data)
+        with benchmark.howlong('perform linear remap'):
+            remap_data = remap.linear_remap(amp_data,
+                                            min_input_val=linear_params['min_input_val'],
+                                            max_input_val=linear_params['max_input_val'],
+                                            min_output_val=linear_params['min_output_val'],
+                                            max_output_val=linear_params['max_output_val'])
         amp_data = None
-
-    # remap
-    with benchmark.howlong('perform remap'):
-        remap_data = remap.amp_to_dens(shaped_data,
-                                       dmin=amp_to_dens_params['dmin'],
-                                       mmult=amp_to_dens_params['mmult'],
-                                       data_mean=amp_to_dens_params['data_mean'])
-        shaped_data = None
 
     # project
     with benchmark.howlong('projection'):
@@ -101,16 +112,20 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
         remap_data = None
 
     with benchmark.howlong('output formatting'):
-        _clip_inplace(proj_data)  # projection interpolation could result in small negative values
-        output_data = proj_data.astype(np.uint8)
+        if bit_depth == 8:
+            _clip_inplace(proj_data, 0, 2**8-1)  # projection interpolation could result in small negative values
+            output_data = proj_data.astype(np.uint8)
+        else:
+            _clip_inplace(proj_data, 0, 2**16-1)  # projection interpolation could result in small negative values
+            output_data = proj_data.astype(np.uint16)
         proj_data = None
 
-    sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds, sidd_version)
+    sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds, sidd_version, bit_depth)
 
     return output_data, sidd_metadata
 
 
-def _create_sidd_metadata(proj, bounds, sidd_version):
+def _create_sidd_metadata(proj, bounds, sidd_version, bit_depth):
     """Generate the SIDD metadata for the supplied projection helper
 
     Args
@@ -121,6 +136,8 @@ def _create_sidd_metadata(proj, bounds, sidd_version):
         Output area bounds.  [min row, max row, min column, max column]
     sidd_version: int
         Version of SIDD metadata to produce
+    bit_depth: int
+        Indicates bits to use for output.  Must be 8 or 16.
 
     Returns
     -------
@@ -155,7 +172,7 @@ def _create_sidd_metadata(proj, bounds, sidd_version):
         ortho_helper,
         bounds,
         'Detected Image',
-        'MONO8I',
+        f'MONO{bit_depth}I',
         version=sidd_version)
     _propagate_proc_metadata(ortho_helper.proj_helper.sicd, sidd_metadata)
     return sidd_metadata
@@ -181,15 +198,15 @@ def _amplitude(data):
 
 
 @numba.njit(parallel=True)
-def _clip_inplace(data):
-    """Inplace clip values to 0 and 255"""
+def _clip_inplace(data, min_val, max_val):
+    """Inplace clip values to min_val and max_val"""
     # Explicit numba loops are faster than np.clip
     for row in numba.prange(data.shape[0]):
         for col in numba.prange(data.shape[1]):
-            if data[row, col] < 0:
-                data[row, col] = 0
-            elif data[row, col] > 255:
-                data[row, col] = 255
+            if data[row, col] < min_val:
+                data[row, col] = min_val
+            elif data[row, col] > max_val:
+                data[row, col] = max_val
     return data
 
 def _scale_input_and_shift(coefs, scales, new_origins):
@@ -237,7 +254,7 @@ def main(args=None):
                         default='Skip', help="Desired sidelobe control. Default: %(default)s,"
                         " which retains weighting of input SICD.")
     parser.add_argument('--spectral-shaping', action=argparse.BooleanOptionalAction, default=True,
-                        help="Apply spectral shaping")
+                        help="Apply spectral shaping (only applicable for 8-bit output)")
     parser.add_argument('--pre-detection-osr', default=None, type=str, choices=['5/4', '4/3', '3/2', '2/1'],
                         help="Oversample ratio prior to detection.  Will impact quality of DSVA and JIQ."
                         "  SVA sets to 2/1  JIQ defaults to 3/2")
@@ -247,6 +264,9 @@ def main(args=None):
                         help="Max weight used by EGR. Default: %(default)s, set lower to increase correction.")
     parser.add_argument('--sidd-version', default=3, type=int, choices=[1, 2, 3],
                         help="The version of the SIDD standard used.  Default: %(default)s")
+    parser.add_argument('--bit-depth', default=8, type=int, choices=[8, 16],
+                        help="The number of bits to use for each output pixel."
+                        " 16-bit output is experimental. Default: %(default)s")
     parser.add_argument('--fft-backend', choices=['auto', 'mkl', 'scipy'], default='auto',
                         help="Which FFT backend to use. Default: %(default)s, which will use mkl if available")
     parser.add_argument('-v', '--verbose', action='count', default=0,
@@ -368,7 +388,8 @@ def main(args=None):
             sidd_pixels, sidd_meta = sicd_to_sidd(sp_pixels, sicd_metadata,
                                                   sidelobe_control=sidelobe_option,
                                                   sidd_version=config.sidd_version,
-                                                  apply_spectral_shaping=config.spectral_shaping)
+                                                  apply_spectral_shaping=config.spectral_shaping,
+                                                  bit_depth=config.bit_depth)
             sp_pixels = None
 
             with benchmark.howlong('write'):

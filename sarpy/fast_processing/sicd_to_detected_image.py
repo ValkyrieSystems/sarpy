@@ -9,6 +9,7 @@ import tracemalloc
 import numba
 import numpy as np
 import numpy.polynomial.polynomial as npp
+import shapely.geometry as shg
 
 # TODO Refactor from sarpy2
 import sarpy.geometry.point_projection
@@ -59,7 +60,7 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
         SIDD Metadata object
     """
     assert bit_depth in [8, 16]
-    proj_helper, ortho_bounds = _projection_info(sicd_metadata)
+    proj_helper, output_bounds = _projection_info(sicd_metadata)
 
     # amplitude
     with benchmark.howlong('amplitude'):
@@ -108,7 +109,7 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
         # TODO adjust output plane based on chipped extent
         # TODO compute SIDD metadata from SICD metadata
         # TODO create callables for SICD <--> SIDD coordinates
-        proj_data = projection.project(remap_data, sicd_metadata, proj_helper, ortho_bounds)
+        proj_data = projection.project(remap_data, sicd_metadata, proj_helper, output_bounds)
         remap_data = None
 
     with benchmark.howlong('output formatting'):
@@ -120,7 +121,7 @@ def sicd_to_sidd(data, sicd_metadata, sidelobe_control,
             output_data = proj_data.astype(np.uint16)
         proj_data = None
 
-    sidd_metadata = _create_sidd_metadata(proj_helper, ortho_bounds, sidd_version, bit_depth)
+    sidd_metadata = _create_sidd_metadata(proj_helper, output_bounds, sidd_version, bit_depth)
 
     return output_data, sidd_metadata
 
@@ -396,10 +397,26 @@ def main(args=None):
                 write_sidd.write_to_file(str(config.output_sidd), sidd_pixels, sidd_meta)
 
 
+def _polygon_densify(poly, max_edge_length):
+    def make_vertices(start_vertex, end_vertex):
+        edge_length = np.linalg.norm(end_vertex - start_vertex)
+        edge_count = int(np.ceil(edge_length/float(max_edge_length)))
+        vertices = np.zeros((edge_count, 2), dtype=np.float64)
+        vertices[:, 0] = np.linspace(start_vertex[0], end_vertex[0], edge_count, endpoint=False)
+        vertices[:, 1] = np.linspace(start_vertex[1], end_vertex[1], edge_count, endpoint=False)
+        return vertices
+
+    vertices = []
+    for ndx in range(poly.shape[0]):
+        start_vertex = poly[ndx, :]
+        end_vertex = poly[(ndx+1) % poly.shape[0], :]
+        vertices.append(make_vertices(start_vertex, end_vertex))
+    return np.vstack(vertices)
+
+
 def _projection_info(sicd_meta):
     """Compute information necessary for ground projection"""
     # TODO refactor this function to run from SICD XML
-    from sarpy.processing.ortho_rectify import NearestNeighborMethod
     from sarpy.processing.ortho_rectify import projection_helper
 
     # Based on sarpy.processing.ortho_rectify.ortho_methods.OrthorectificationHelper.set_index_and_proj_helper
@@ -407,9 +424,20 @@ def _projection_info(sicd_meta):
         plane = sicd_meta.RadarCollection.Area.Plane
         row_sample_spacing = plane.XDir.LineSpacing
         col_sample_spacing = plane.YDir.SampleSpacing
-        default_ortho_bounds = np.array([plane.XDir.FirstLine, plane.XDir.FirstLine + plane.XDir.NumLines,
-                                         plane.YDir.FirstSample, plane.YDir.FirstSample + plane.YDir.NumSamples],
-                                        dtype=np.uint32)
+        output_bounds = np.array([plane.XDir.FirstLine, plane.XDir.FirstLine + plane.XDir.NumLines,
+                                  plane.YDir.FirstSample, plane.YDir.FirstSample + plane.YDir.NumSamples],
+                                 dtype=np.uint32)
+        reference_pixel = np.array([sicd_meta.RadarCollection.Area.Plane.RefPt.Line,
+                                    sicd_meta.RadarCollection.Area.Plane.RefPt.Sample], dtype='float64')
+
+        ph_kwargs = {
+            'sicd': sicd_meta,
+            'row_spacing': row_sample_spacing,
+            'col_spacing': col_sample_spacing,
+            'reference_pixels': reference_pixel
+        }
+        proj_helper = projection_helper.PGProjection(**ph_kwargs)
+
     except AttributeError:
         delta_xrow = 1.0 / sicd_meta.Grid.Row.ImpRespBW
         delta_ycol = 1.0 / sicd_meta.Grid.Col.ImpRespBW
@@ -427,36 +455,46 @@ def _projection_info(sicd_meta):
         sample_spacing = 0.886 * min(gpxy_resolutions) / 1.5
         row_sample_spacing = sample_spacing
         col_sample_spacing = sample_spacing
-        default_ortho_bounds = None
 
-    ph_kwargs = {
-        'sicd': sicd_meta,
-        'row_spacing': row_sample_spacing,
-        'col_spacing': col_sample_spacing,
-    }
-    proj_helper = projection_helper.PGProjection(**ph_kwargs)
+        ph_kwargs = {
+            'sicd': sicd_meta,
+            'row_spacing': row_sample_spacing,
+            'col_spacing': col_sample_spacing,
+        }
+        initial_proj_helper = projection_helper.PGProjection(**ph_kwargs)
 
-    # legacy OrthoHelper requires an SICDTypeReader
-    from sarpy.io.complex.base import SICDTypeReader
-    class DummyReader(SICDTypeReader):
-        def __init__(self, sicd_meta):
-            super().__init__(data_segment=None, sicd_meta=sicd_meta)
+        # Intersect array extent with any valid data poly to determine perimeter to project
+        extent_rc_poly = shg.Polygon(sicd_meta.ImageData.get_full_vertex_data())
+        valid_rc_poly = shg.Polygon(sicd_meta.ImageData.get_valid_vertex_data())
+        if valid_rc_poly:
+            sicd_poly = extent_rc_poly.intersection(valid_rc_poly).exterior
+        else:
+            sicd_poly = extent_rc_poly.exterior
 
-        def get_sicds_as_tuple(self):
-            return (self.sicd_meta, )
+        max_edge_length = sicd_poly.length / 40
+        dense_perimeter = _polygon_densify(np.array(sicd_poly.coords), max_edge_length)
 
-    ortho_helper = NearestNeighborMethod(
-        DummyReader(sicd_meta),
-        proj_helper=proj_helper,
-    )
-    ortho_helper._sicd = sicd_meta
+        initial_output_coords = initial_proj_helper.pixel_to_ortho(dense_perimeter)
+        mrr = shg.Polygon(initial_output_coords).minimum_rotated_rectangle
 
-    # Finish up sarpy.processing.ortho_rectify.ortho_metods.OrthorectificationHelper.set_index_and_proj_helper
-    if default_ortho_bounds is not None:
-        _, ortho_rectangle = ortho_helper.bounds_to_rectangle(default_ortho_bounds)
-        ortho_helper._default_physical_bounds = ortho_helper.proj_helper.ortho_to_ecf(ortho_rectangle)
+        mrr_coords = np.array(mrr.exterior.coords)
+        axis = mrr_coords[3] - mrr_coords[0]
+        rot_angle = np.arctan2(axis[1], axis[0])
+        rot_angle = (rot_angle + np.pi/4) % (np.pi/2) - np.pi/4
+        new_row =  np.cos(rot_angle) * initial_proj_helper.row_vector + np.sin(rot_angle) * initial_proj_helper.col_vector
+        new_col = -np.sin(rot_angle) * initial_proj_helper.row_vector + np.cos(rot_angle) * initial_proj_helper.col_vector
 
-    return ortho_helper.proj_helper, ortho_helper.get_valid_ortho_bounds()
+        ph_kwargs.update({'row_vector': new_row,
+                          'col_vector': new_col})
+        proj_helper = projection_helper.PGProjection(**ph_kwargs)
+        output_coords = proj_helper.pixel_to_ortho(dense_perimeter)
+
+        output_bounds = np.array((np.ceil(np.min(output_coords[:, 0], axis=0)),
+                                  np.floor(np.max(output_coords[:, 0], axis=0)),
+                                  np.ceil(np.min(output_coords[:, 1], axis=0)),
+                                  np.floor(np.max(output_coords[:, 1], axis=0))), dtype=np.int64)
+
+    return proj_helper, output_bounds
 
 
 if __name__ == '__main__':

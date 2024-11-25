@@ -1,3 +1,6 @@
+## [1.3.60a4.dev24]
+- Update SIDD output plane orientation to minimize area when SICD/RadarCollection/Area/Plane not specified.
+
 ## [1.3.60a4.dev23]
 - Add option for 16-bit SIDD output
 

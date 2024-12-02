@@ -252,7 +252,7 @@ def main(args=None):
     parser.add_argument('input_sicd', type=pathlib.Path, help="Path to input SICD")
     parser.add_argument('output_sidd', type=pathlib.Path, help="Path to write SIDD NITF")
     parser.add_argument('--sidelobe-control', choices=['Skip', 'Uniform', 'Taylor', 'SVA', 'DSVA', 'JIQ'],
-                        default='Skip', help="Desired sidelobe control. Default: %(default)s,"
+                        default='SVA', help="Desired sidelobe control. Default: %(default)s,"
                         " which retains weighting of input SICD.")
     parser.add_argument('--spectral-shaping', action=argparse.BooleanOptionalAction, default=True,
                         help="Apply spectral shaping (only applicable for 8-bit output)")
